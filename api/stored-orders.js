@@ -1,4 +1,4 @@
-import { readStoredOrders } from '../_shared.js';
+import { readStoredOrders } from './_shared.js';
 
 export default async function handler(req, res) {
   try {

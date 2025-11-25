@@ -12,6 +12,9 @@ const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const TMP_ORDERS_PATH = path.join(os.tmpdir(), 'orders.json');
 
+// Debug: log whether Upstash env are set (masked)
+console.log('[_shared] UPSTASH configured?', !!UPSTASH_URL, !!UPSTASH_TOKEN);
+
 async function ensureStorage() {
   try {
     await fs.mkdir(STORAGE_DIR, { recursive: true });
@@ -28,22 +31,29 @@ async function ensureStorage() {
 async function upstashGetOrders() {
   if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
   try {
-    const res = await fetch(`${UPSTASH_URL}/commands`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${UPSTASH_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ command: 'GET', args: ['orders'] })
-    });
-    if (!res.ok) throw new Error(`Upstash GET failed: ${res.status}`);
-    const json = await res.json();
-    // json.result will be string value or null
+    // Upstash REST GET for a key: GET {url}/get/{key}?token={token}
+    const base = UPSTASH_URL.replace(/\/$/, '');
+    const url = `${base}/get/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+    console.log('[_shared] upstashGetOrders: calling', url);
+    const res = await fetch(url, { method: 'GET' });
+    const bodyText = await res.text();
+    if (!res.ok) {
+      console.error('[_shared] upstashGetOrders non-ok:', res.status, bodyText);
+      return null;
+    }
+    let json;
+    try {
+      json = JSON.parse(bodyText);
+    } catch (e) {
+      console.warn('[_shared] upstashGetOrders: invalid JSON response', e, bodyText);
+      return null;
+    }
+    // Upstash returns: { result: <value> } where result is the stored string
     if (!json || json.result == null) return [];
     try {
       return JSON.parse(json.result);
     } catch (e) {
-      // if stored as plain string, return as empty array
+      console.warn('[_shared] upstashGetOrders: parse error', e);
       return [];
     }
   } catch (e) {
@@ -55,16 +65,26 @@ async function upstashGetOrders() {
 async function upstashSetOrders(list) {
   if (!UPSTASH_URL || !UPSTASH_TOKEN) return false;
   try {
+    const base = UPSTASH_URL.replace(/\/$/, '');
+    const url = `${base}/set/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+    console.log('[_shared] upstashSetOrders: calling', url);
     const value = JSON.stringify(list);
-    const res = await fetch(`${UPSTASH_URL}/commands`, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${UPSTASH_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ command: 'SET', args: ['orders', value] })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value })
     });
-    if (!res.ok) throw new Error(`Upstash SET failed: ${res.status}`);
+    const bodyText = await res.text();
+    if (!res.ok) {
+      console.error('[_shared] upstashSetOrders non-ok:', res.status, bodyText);
+      return false;
+    }
+    try {
+      JSON.parse(bodyText);
+    } catch (e) {
+      // ignore
+    }
+    console.log('[_shared] upstashSetOrders: success');
     return true;
   } catch (e) {
     console.error('Upstash SET error:', e);
