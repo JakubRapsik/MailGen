@@ -28,7 +28,7 @@ export const EmailGenerator = () => {
     type Toast = { id: string; message: string; variant?: "info" | "success" | "error" | "warning" };
     const [toasts, setToasts] = useState<Toast[]>([]);
 
-    const showToast = (message: string, variant: Toast["variant"] = "info", duration = 5000) => {
+    const showToast = (message: string, variant: Toast["variant"] = "info", duration = 10000) => {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         const t: Toast = { id, message, variant };
         setToasts((s) => [t, ...s]);
@@ -123,7 +123,7 @@ export const EmailGenerator = () => {
             } catch (e) {
                 // ignore errors in polling
             }
-        }, 5000);
+        }, 10000);
 
         return () => {
             cancelled = true;
