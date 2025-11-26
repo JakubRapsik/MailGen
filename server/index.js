@@ -279,7 +279,7 @@ async function pollPendingOrdersOnce() {
     if (polling) return;
     polling = true;
     try {
-        const list = await readStoredOrders();
+        const list = null;
         const pending = list.filter((it) => it.status === 'pending');
         if (!pending.length) return;
         console.log(`Polling ${pending.length} pending orders for messages...`);

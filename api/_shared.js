@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import fetch from 'node-fetch';
 import os from 'os';
+import { kv } from '@vercel/kv';
 // Try to use official Upstash SDK when available for more reliable auth
 let UpstashRedis;
 try {
@@ -17,15 +18,16 @@ const TOKEN = process.env.ANYMESSAGE_TOKEN;
 
 const STORAGE_DIR = path.join(process.cwd(), 'server_data');
 const ORDERS_PATH = path.join(STORAGE_DIR, 'orders.json');
-const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+// Accept multiple env var names (compat with Vercel KV / Upstash and REDIS_URL aliases)
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || process.env.KV_URL || process.env.REDIS_URL || null;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || process.env.KV_REST_API_READ_ONLY_TOKEN || null;
 const TMP_ORDERS_PATH = path.join(os.tmpdir(), 'orders.json');
 
 // compute Upstash commands endpoint robustly
 function upstashCommandsUrl() {
   if (!UPSTASH_URL) return null;
   // if the provided URL already contains /commands, use as-is
-  if (UPSTASH_URL.includes('/commands')) return UPSTASH_URL.replace(/\/+$/, '');
+  if (UPSTASH_URL.includes('/commands')) return UPSTASH_URL.replace(/\/+$|\?token=.*$/,'');
   return UPSTASH_URL.replace(/\/+$/, '') + '/commands';
 }
 
@@ -49,15 +51,49 @@ async function ensureStorage() {
 }
 
 // helper: Upstash SDK client
+// Use a cached singleton to avoid creating multiple clients across requests
+let _cachedUpstashClient = null;
 function getUpstashClient() {
-  if (!UpstashRedis || !UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  if (_cachedUpstashClient) return _cachedUpstashClient;
+
+  if (!UpstashRedis) return null;
+
   try {
-    return new UpstashRedis({ url: UPSTASH_URL, token: UPSTASH_TOKEN });
+    // Prefer the SDK helper that reads from env (Redis.fromEnv()) if available
+    if (typeof UpstashRedis.fromEnv === 'function') {
+      try {
+        _cachedUpstashClient = UpstashRedis.fromEnv();
+        return _cachedUpstashClient;
+      } catch (e) {
+        // If fromEnv fails for any reason, fall back to explicit constructor below
+        console.warn('[getUpstashClient] Redis.fromEnv() failed, falling back to explicit constructor:', e?.message ?? e);
+      }
+    }
+
+    // If fromEnv isn't available or failed, try constructing with explicit url/token
+    if (UPSTASH_URL && UPSTASH_TOKEN) {
+      _cachedUpstashClient = new UpstashRedis({ url: UPSTASH_URL, token: UPSTASH_TOKEN });
+      return _cachedUpstashClient;
+    }
+
+    // Last attempt: if REDIS_URL style (e.g., rediss://...) is present and UpstashRedis accepts it
+    if (process.env.REDIS_URL && typeof UpstashRedis.fromEnv !== 'function') {
+      try {
+        _cachedUpstashClient = new UpstashRedis({ url: process.env.REDIS_URL, token: process.env.REDIS_PASSWORD || UPSTASH_TOKEN });
+        return _cachedUpstashClient;
+      } catch (e) {
+        // ignore and return null below
+      }
+    }
+
+    return null;
   } catch (e) {
     console.error('[getUpstashClient] failed to create client:', e?.message ?? e);
     return null;
   }
 }
+
+export { getUpstashClient };
 
 async function upstashGetOrders() {
   // prefer SDK client if available
@@ -251,9 +287,32 @@ async function upstashSetOrders(list) {
   }
 }
 
-// Prefer Upstash if configured, otherwise filesystem. On Vercel filesystem might be read-only
+// Prefer KV (Vercel KV) if configured, otherwise prefer Upstash, otherwise filesystem. On Vercel filesystem might be read-only
 async function readStoredOrders() {
-  // Try Upstash first
+  // 1) Try Vercel KV
+  try {
+    if (kv) {
+      try {
+        const val = await kv.get('orders');
+        if (!val) return [];
+        if (typeof val === 'string') {
+          try {
+            return JSON.parse(val);
+          } catch (e) {
+            console.warn('[readStoredOrders] failed to parse KV JSON, returning empty list', e?.message ?? e);
+            return [];
+          }
+        }
+        return Array.isArray(val) ? val : [];
+      } catch (e) {
+        console.warn('[readStoredOrders] KV read failed, falling back:', e?.message ?? e);
+      }
+    }
+  } catch (e) {
+    // ignore if kv import or runtime not available
+  }
+
+  // 2) Try Upstash if configured
   try {
     const fromUpstash = await upstashGetOrders();
     if (fromUpstash !== null) return fromUpstash;
@@ -261,15 +320,13 @@ async function readStoredOrders() {
     console.error('Upstash read failed, falling back to filesystem:', e);
   }
 
-  // Filesystem fallback: check tmp path first (in case writes went there), then repo path
+  // 3) Filesystem fallback: check tmp path first (in case writes went there), then repo path
   try {
-    // Ensure existence of storage dir for local dev
     await ensureStorage();
   } catch (e) {
     // ignore
   }
 
-  // Try tmp path
   try {
     const rawTmp = await fs.readFile(TMP_ORDERS_PATH, 'utf-8');
     const cleanedTmp = rawTmp.replace(/^\s*\/\/.*$/gm, '').trim();
@@ -311,18 +368,36 @@ async function readStoredOrders() {
 }
 
 async function writeStoredOrders(list) {
-  // If Upstash configured, try that first
+  // 1) Try Vercel KV
+  try {
+    if (kv) {
+      try {
+        await kv.set('orders', JSON.stringify(list));
+        console.log('[writeStoredOrders] wrote orders to Vercel KV');
+        return;
+      } catch (e) {
+        console.warn('[writeStoredOrders] KV write failed, falling back:', e?.message ?? e);
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // 2) Try Upstash if configured
   try {
     if (UPSTASH_URL && UPSTASH_TOKEN) {
       const ok = await upstashSetOrders(list);
-      if (ok) return;
+      if (ok) {
+        console.log('[writeStoredOrders] wrote orders to Upstash');
+        return;
+      }
       // fallback to filesystem if Upstash fails
     }
   } catch (e) {
     console.error('Upstash write failed, falling back to filesystem:', e);
   }
 
-  // Try writing to repo path (works for local dev)
+  // 3) Filesystem fallback
   try {
     await ensureStorage();
     await fs.writeFile(ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
@@ -331,7 +406,6 @@ async function writeStoredOrders(list) {
     console.warn('Write to repo path failed, attempting to write to tmp dir:', e?.message ?? e);
   }
 
-  // Last resort: write to tmp dir (works on Vercel ephemeral filesystem for the running instance)
   try {
     await fs.writeFile(TMP_ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
     return;
@@ -342,6 +416,37 @@ async function writeStoredOrders(list) {
 
 async function updateOrderStatus(id, status) {
   try {
+    // Try to update in KV if possible
+    if (kv) {
+      try {
+        const val = await kv.get('orders');
+        let list = [];
+        if (val) {
+          if (typeof val === 'string') {
+            try {
+              list = JSON.parse(val);
+            } catch (e) {
+              list = [];
+            }
+          } else if (Array.isArray(val)) {
+            list = val;
+          }
+        }
+        const idx = list.findIndex((it) => String(it.id) === String(id));
+        if (idx !== -1) {
+          list[idx].status = status;
+          list[idx].updatedAt = new Date().toISOString();
+          await kv.set('orders', JSON.stringify(list));
+          console.log('[updateOrderStatus] updated order in KV', id, status);
+          return;
+        }
+        // if not found in KV, fall through to read/mutate other stores
+      } catch (e) {
+        console.warn('[updateOrderStatus] KV update failed, falling back:', e?.message ?? e);
+      }
+    }
+
+    // Fallback: read from preferred storage chain and write back
     const existing = await readStoredOrders();
     const idx = existing.findIndex((it) => String(it.id) === String(id));
     if (idx !== -1) {
