@@ -412,17 +412,54 @@ export const EmailGenerator = () => {
                     {orders.length === 0 && <div className="text-sm text-tertiary">No orders yet</div>}
                     <ul className="mt-2 space-y-2">
                         {orders.map((o) => (
-                            <li key={o.id} className="flex items-center justify-between border-b py-2">
+                            <li key={o.id} className="flex items-start justify-between gap-2 rounded p-2 hover:bg-surface-50">
                                 <div>
-                                    <div className="text-sm"><strong>{o.email ?? o.id}</strong></div>
-                                    <div className="text-xs text-tertiary">id: {o.id} • {o.status ?? 'pending'}</div>
+                                    <div className="text-sm font-medium">{o.email ?? o.id}</div>
+                                    <div className="text-xs text-tertiary">
+                                        {o.site ?? FIXED_SITE} · {o.status ?? 'pending'}{o.updatedAt ? ` · ${new Date(o.updatedAt).toLocaleString()}` : ''}
+                                    </div>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                    <ButtonUtility size="sm" onClick={() => handleGetMessage(o.id)}>Get</ButtonUtility>
-                                    <ButtonUtility size="sm" onClick={() => openPreviewHtml(o.id)}>Preview</ButtonUtility>
-                                    <ButtonUtility size="sm" onClick={() => downloadPreviewHtml(o.id)}>Download</ButtonUtility>
-                                    <ButtonUtility size="sm" onClick={() => handleCancel(o.id)}>Cancel</ButtonUtility>
-                                    <ButtonUtility size="sm" onClick={() => handleReorder(o.id)}>Reorder</ButtonUtility>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                        title="Fetch message now"
+                                        onClick={() => handleGetMessage(o.id)}
+                                        className="rounded border px-2 py-1 text-xs"
+                                    >
+                                        Get message
+                                    </button>
+
+                                    <button
+                                        title="Open HTML preview (uses preview=1)"
+                                        onClick={() => openPreviewHtml(o.id)}
+                                        className="rounded border px-2 py-1 text-xs"
+                                    >
+                                        Preview HTML
+                                    </button>
+
+                                    <button
+                                        title="Download HTML preview"
+                                        onClick={() => downloadPreviewHtml(o.id)}
+                                        className="rounded border px-2 py-1 text-xs"
+                                    >
+                                        Download HTML
+                                    </button>
+
+                                    <button
+                                        title="Cancel this activation/order"
+                                        onClick={() => handleCancel(o.id)}
+                                        className="rounded border px-2 py-1 text-xs text-danger"
+                                    >
+                                        Cancel
+                                    </button>
+
+                                    <button
+                                        title="Create a new order using this id as template"
+                                        onClick={() => handleReorder(o.id)}
+                                        className="rounded border px-2 py-1 text-xs"
+                                    >
+                                        Reorder
+                                    </button>
                                 </div>
                             </li>
                         ))}
