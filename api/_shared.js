@@ -30,64 +30,136 @@ async function ensureStorage() {
 
 async function upstashGetOrders() {
   if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  const base = UPSTASH_URL.replace(/\/$/, '');
+
+  // Try Authorization header first (more reliable)
+  const urlHeader = `${base}/get/orders`;
   try {
-    // Upstash REST GET for a key: GET {url}/get/{key}?token={token}
-    const base = UPSTASH_URL.replace(/\/$/, '');
-    const url = `${base}/get/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
-    console.log('[_shared] upstashGetOrders: calling', url);
-    const res = await fetch(url, { method: 'GET' });
+    console.log('[_shared] upstashGetOrders: trying Authorization header at', urlHeader);
+    let res = await fetch(urlHeader, { method: 'GET', headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } });
+    let bodyText = await res.text();
+    if (res.ok) {
+      let json;
+      try {
+        json = JSON.parse(bodyText);
+      } catch (e) {
+        console.warn('[_shared] upstashGetOrders: invalid JSON response', e, bodyText);
+        return null;
+      }
+      if (!json || json.result == null) return [];
+      // json.result may be a stringified array, or a stringified object like { value: '...'}
+      try {
+        const parsed = JSON.parse(json.result);
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && typeof parsed.value === 'string') {
+          try {
+            return JSON.parse(parsed.value);
+          } catch (e) {
+            console.warn('[_shared] upstashGetOrders: failed to parse nested value', e);
+            return [];
+          }
+        }
+        // unexpected shape
+        console.warn('[_shared] upstashGetOrders: unexpected parsed shape', parsed);
+        return [];
+      } catch (e) {
+        // json.result might already be the raw array string; try to parse directly
+        try {
+          const direct = JSON.parse(json.result);
+          return Array.isArray(direct) ? direct : [];
+        } catch (ee) {
+          console.warn('[_shared] upstashGetOrders: failed to parse result', ee);
+          return [];
+        }
+      }
+    }
+
+    console.warn('[_shared] upstashGetOrders: header call non-ok', res.status, bodyText);
+  } catch (e) {
+    console.error('[_shared] upstashGetOrders header attempt failed', e);
+  }
+
+  // Fallback to query-param method
+  const urlQuery = `${base}/get/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+  try {
+    console.log('[_shared] upstashGetOrders: trying query-param at', urlQuery);
+    const res = await fetch(urlQuery, { method: 'GET' });
     const bodyText = await res.text();
     if (!res.ok) {
-      console.error('[_shared] upstashGetOrders non-ok:', res.status, bodyText);
+      console.error('[_shared] upstashGetOrders query call non-ok', res.status, bodyText);
       return null;
     }
-    let json;
-    try {
-      json = JSON.parse(bodyText);
-    } catch (e) {
-      console.warn('[_shared] upstashGetOrders: invalid JSON response', e, bodyText);
-      return null;
-    }
-    // Upstash returns: { result: <value> } where result is the stored string
+    const json = JSON.parse(bodyText);
     if (!json || json.result == null) return [];
     try {
-      return JSON.parse(json.result);
-    } catch (e) {
-      console.warn('[_shared] upstashGetOrders: parse error', e);
+      const parsed = JSON.parse(json.result);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed.value === 'string') {
+        try {
+          return JSON.parse(parsed.value);
+        } catch (e) {
+          console.warn('[_shared] upstashGetOrders: failed to parse nested value', e);
+          return [];
+        }
+      }
       return [];
+    } catch (e) {
+      try {
+        const direct = JSON.parse(json.result);
+        return Array.isArray(direct) ? direct : [];
+      } catch (ee) {
+        console.warn('[_shared] upstashGetOrders: failed to parse result', ee);
+        return [];
+      }
     }
   } catch (e) {
-    console.error('Upstash GET error:', e);
+    console.error('Upstash GET error (query fallback):', e);
     return null;
   }
 }
 
 async function upstashSetOrders(list) {
   if (!UPSTASH_URL || !UPSTASH_TOKEN) return false;
+  const base = UPSTASH_URL.replace(/\/$/, '');
+  const urlHeader = `${base}/set/orders`;
+  const body = JSON.stringify({ value: JSON.stringify(list) });
+
+  // Try Authorization header first
   try {
-    const base = UPSTASH_URL.replace(/\/$/, '');
-    const url = `${base}/set/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
-    console.log('[_shared] upstashSetOrders: calling', url);
-    const value = JSON.stringify(list);
-    const res = await fetch(url, {
+    console.log('[_shared] upstashSetOrders: trying Authorization header at', urlHeader);
+    let res = await fetch(urlHeader, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      body
+    });
+    let bodyText = await res.text();
+    if (res.ok) {
+      console.log('[_shared] upstashSetOrders: header call success');
+      return true;
+    }
+    console.warn('[_shared] upstashSetOrders: header call non-ok', res.status, bodyText);
+  } catch (e) {
+    console.error('[_shared] upstashSetOrders header attempt failed', e);
+  }
+
+  // Fallback to query-param
+  const urlQuery = `${base}/set/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+  try {
+    console.log('[_shared] upstashSetOrders: trying query-param at', urlQuery);
+    const res = await fetch(urlQuery, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value })
+      body
     });
     const bodyText = await res.text();
     if (!res.ok) {
-      console.error('[_shared] upstashSetOrders non-ok:', res.status, bodyText);
+      console.error('[_shared] upstashSetOrders query call non-ok', res.status, bodyText);
       return false;
     }
-    try {
-      JSON.parse(bodyText);
-    } catch (e) {
-      // ignore
-    }
-    console.log('[_shared] upstashSetOrders: success');
+    console.log('[_shared] upstashSetOrders: query call success');
     return true;
   } catch (e) {
-    console.error('Upstash SET error:', e);
+    console.error('Upstash SET error (query fallback):', e);
     return false;
   }
 }
@@ -156,8 +228,12 @@ async function writeStoredOrders(list) {
   try {
     if (UPSTASH_URL && UPSTASH_TOKEN) {
       const ok = await upstashSetOrders(list);
-      if (ok) return;
+      if (ok) {
+        console.log('[_shared] writeStoredOrders: stored to Upstash');
+        return true;
+      }
       // fallback to filesystem if Upstash fails
+      console.warn('[_shared] writeStoredOrders: Upstash failed, falling back to filesystem');
     }
   } catch (e) {
     console.error('Upstash write failed, falling back to filesystem:', e);
@@ -167,7 +243,8 @@ async function writeStoredOrders(list) {
   try {
     await ensureStorage();
     await fs.writeFile(ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
-    return;
+    console.log('[_shared] writeStoredOrders: wrote to ORDERS_PATH', ORDERS_PATH);
+    return true;
   } catch (e) {
     console.warn('Write to repo path failed, attempting to write to tmp dir:', e?.message ?? e);
   }
@@ -175,51 +252,11 @@ async function writeStoredOrders(list) {
   // Last resort: write to tmp dir (works on Vercel ephemeral filesystem for the running instance)
   try {
     await fs.writeFile(TMP_ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
-    return;
+    console.log('[_shared] writeStoredOrders: wrote to TMP_ORDERS_PATH', TMP_ORDERS_PATH);
+    return true;
   } catch (e) {
     console.error('Failed to write stored orders to tmp path:', e);
   }
+
+  return false;
 }
-
-async function updateOrderStatus(id, status) {
-  try {
-    const existing = await readStoredOrders();
-    const idx = existing.findIndex((it) => String(it.id) === String(id));
-    if (idx !== -1) {
-      existing[idx].status = status;
-      existing[idx].updatedAt = new Date().toISOString();
-      await writeStoredOrders(existing);
-    }
-  } catch (e) {
-    console.error('Failed to update order status:', e);
-  }
-}
-
-// forward API requests to AnyMessage, attach token from env if not provided
-async function forward(pathname, query = {}) {
-  const params = new URLSearchParams();
-  Object.entries(query).forEach(([k, v]) => {
-    if (v !== undefined && v !== null) params.set(k, String(v));
-  });
-  if (!params.has('token') && TOKEN) params.set('token', TOKEN);
-
-  const url = `${API_BASE}${pathname}?${params.toString()}`;
-  const res = await fetch(url);
-  const text = await res.text();
-
-  // Detect raw HTML responses
-  const looksLikeHtml = typeof text === 'string' && /<\/?html|<!doctype/i.test(text);
-  const isGetMessagePreview = pathname === '/email/getmessage' && params.get('preview') === '1';
-
-  if (looksLikeHtml && !isGetMessagePreview) {
-    return { status: res.status, body: { status: 'error', value: 'html_response', length: text.length } };
-  }
-
-  try {
-    return { status: res.status, body: JSON.parse(text) };
-  } catch (e) {
-    return { status: res.status, body: text };
-  }
-}
-
-export { API_BASE, TOKEN, readStoredOrders, writeStoredOrders, updateOrderStatus, forward };
