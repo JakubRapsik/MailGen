@@ -11,22 +11,12 @@ export default async function handler(req, res) {
 
         try {
             if (!isPreview) {
-                // Prefer updating the order by the requested id (req.query.id). Upstream may return a different id field
-                // (for example a message id) which won't match the stored order id; using the requested id ensures we
-                // update the correct order entry.
-                const requestedId = req.query.id;
-                const updateId = requestedId ?? (r && r.body && typeof r.body === 'object' && r.body.id ? r.body.id : null);
-
-                if (updateId) {
-                    // If upstream returned an object with status 'success' or if body is a raw string, treat as received
-                    if ((r && r.body && typeof r.body === 'object' && r.body.status === 'success') || typeof r.body === 'string') {
-                        console.log('[api/email/getmessage] updating order status ->', updateId, 'to success (via getmessage)');
-                        await updateOrderStatus(updateId, 'success');
-                    } else {
-                        console.log('[api/email/getmessage] getmessage did not indicate success for', updateId, 'upstreamBody=', r && r.body);
-                    }
+                if (r && r.body && typeof r.body === 'object' && r.body.status === 'success' && r.body.id) {
+                    const updateId = r.body.id;
+                    console.log('[api/email/getmessage] updating order status ->', updateId, 'to success');
+                    await updateOrderStatus(updateId, 'success');
                 } else {
-                    console.log('[api/email/getmessage] no update id available (no req.query.id and upstream did not return id)');
+                    console.log('[api/email/getmessage] will not update order status; upstream did not return success+id', r && r.body);
                 }
             }
         } catch (e) {
