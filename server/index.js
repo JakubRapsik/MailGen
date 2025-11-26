@@ -1,8 +1,9 @@
 import express from "express";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
-import fs from "fs/promises";
-import path from "path";
+
+// Use shared storage helpers which prefer Vercel KV / Upstash SDK and fall back to filesystem
+import { readStoredOrders, writeStoredOrders, updateOrderStatus } from '../api/_shared.js';
 
 dotenv.config();
 
@@ -19,79 +20,6 @@ const API_BASE = "https://api.anymessage.shop";
 
 const app = express();
 app.use(express.json());
-
-const STORAGE_DIR = path.join(process.cwd(), "server_data");
-const ORDERS_PATH = path.join(STORAGE_DIR, "orders.json");
-
-async function ensureStorage() {
-    try {
-        await fs.mkdir(STORAGE_DIR, { recursive: true });
-        try {
-            await fs.access(ORDERS_PATH);
-        } catch (e) {
-            await fs.writeFile(ORDERS_PATH, JSON.stringify([]), "utf-8");
-        }
-    } catch (e) {
-        console.error("Failed to ensure storage directory:", e);
-    }
-}
-
-async function readStoredOrders() {
-    try {
-        await ensureStorage();
-        const raw = await fs.readFile(ORDERS_PATH, "utf-8");
-        const list = JSON.parse(raw);
-        // Backfill missing status fields to 'pending' so UI always has a value
-        let updated = false;
-        const normalized = Array.isArray(list)
-            ? list.map((it) => {
-                  if (it && typeof it === 'object') {
-                      if (!('status' in it)) {
-                          it.status = 'pending';
-                          updated = true;
-                      }
-                  }
-                  return it;
-              })
-            : [];
-        if (updated) {
-            // persist back to file
-            try {
-                await writeStoredOrders(normalized);
-            } catch (e) {
-                console.error('Failed to persist backfilled statuses:', e);
-            }
-        }
-        return normalized;
-    } catch (e) {
-        console.error("Failed to read stored orders:", e);
-        return [];
-    }
-}
-
-async function writeStoredOrders(list) {
-    try {
-        await ensureStorage();
-        await fs.writeFile(ORDERS_PATH, JSON.stringify(list, null, 2), "utf-8");
-    } catch (e) {
-        console.error("Failed to write stored orders:", e);
-    }
-}
-
-// Helper to update stored order status by id
-async function updateOrderStatus(id, status) {
-    try {
-        const existing = await readStoredOrders();
-        const idx = existing.findIndex((it) => String(it.id) === String(id));
-        if (idx !== -1) {
-            existing[idx].status = status;
-            existing[idx].updatedAt = new Date().toISOString();
-            await writeStoredOrders(existing);
-        }
-    } catch (e) {
-        console.error("Failed to update order status:", e);
-    }
-}
 
 // Helper: forward request to AnyMessage API, attaching token from env if present
 async function forward(path, query = {}) {
@@ -279,7 +207,9 @@ async function pollPendingOrdersOnce() {
     if (polling) return;
     polling = true;
     try {
-        const list = null;
+        // read stored orders (may come from Vercel KV, Upstash, or filesystem)
+        const list = await readStoredOrders();
+        if (!Array.isArray(list) || list.length === 0) return;
         const pending = list.filter((it) => it.status === 'pending');
         if (!pending.length) return;
         console.log(`Polling ${pending.length} pending orders for messages...`);

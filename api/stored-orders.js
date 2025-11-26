@@ -1,13 +1,8 @@
-import fs from 'fs/promises';
-import path from 'path';
+import { readStoredOrders } from './_shared.js';
 
 export default async function handler(req, res) {
   try {
-    const filePath = path.join(process.cwd(), 'server_data', 'orders.json');
-    const raw = await fs.readFile(filePath, 'utf-8');
-    // In case there are accidental // comments in the JSON file, remove them before parsing
-    const cleaned = raw.replace(/^\s*\/\/.*$/gm, '').trim();
-    const data = cleaned ? JSON.parse(cleaned) : [];
+    const data = await readStoredOrders();
     res.setHeader('Content-Type', 'application/json');
     res.status(200).send(data);
   } catch (err) {

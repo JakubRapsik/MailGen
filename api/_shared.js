@@ -108,7 +108,8 @@ async function upstashGetOrders() {
         try {
           return JSON.parse(val);
         } catch (e) {
-          return [];
+          console.warn('[upstashGetOrders] failed to parse KV JSON, falling back to Upstash/filesystem', e?.message ?? e);
+          // continue to fallbacks below (do not return [] here)
         }
       }
       // if it's object/array already
@@ -294,16 +295,20 @@ async function readStoredOrders() {
     if (kv) {
       try {
         const val = await kv.get('orders');
-        if (!val) return [];
-        if (typeof val === 'string') {
-          try {
-            return JSON.parse(val);
-          } catch (e) {
-            console.warn('[readStoredOrders] failed to parse KV JSON, returning empty list', e?.message ?? e);
-            return [];
+        // Treat undefined/null/empty-string as no value so we can fallback to Upstash or filesystem
+        if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
+          // continue to fallbacks below
+        } else {
+          if (typeof val === 'string') {
+            try {
+              return JSON.parse(val);
+            } catch (e) {
+              console.warn('[readStoredOrders] failed to parse KV JSON, falling back to Upstash/filesystem', e?.message ?? e);
+              // continue to fallbacks below (do not return [] here)
+            }
           }
+          return Array.isArray(val) ? val : [];
         }
-        return Array.isArray(val) ? val : [];
       } catch (e) {
         console.warn('[readStoredOrders] KV read failed, falling back:', e?.message ?? e);
       }
