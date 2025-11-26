@@ -20,6 +20,12 @@ function upstashCommandsUrl() {
   return UPSTASH_URL.replace(/\/+$/, '') + '/commands';
 }
 
+function upstashBaseUrl() {
+  if (!UPSTASH_URL) return null;
+  // remove trailing /commands if present
+  return UPSTASH_URL.replace(/\/commands\/?$/i, '').replace(/\/+$/, '');
+}
+
 async function ensureStorage() {
   try {
     await fs.mkdir(STORAGE_DIR, { recursive: true });
@@ -35,11 +41,14 @@ async function ensureStorage() {
 
 async function upstashGetOrders() {
   const commandsUrl = upstashCommandsUrl();
+  const baseUrl = upstashBaseUrl();
   if (!commandsUrl || !UPSTASH_TOKEN) return null;
   try {
     const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
     console.log('[upstashGetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
-    const res = await fetch(commandsUrl, {
+
+    // First attempt: Authorization header against /commands
+    let res = await fetch(commandsUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${UPSTASH_TOKEN}`,
@@ -47,11 +56,55 @@ async function upstashGetOrders() {
       },
       body: JSON.stringify({ command: 'GET', args: ['orders'] })
     });
+
     if (!res.ok) {
-      const bodyText = await res.text().catch(() => '<no-body>');
+      let bodyText = await res.text().catch(() => '<no-body>');
       console.error(`[upstashGetOrders] Upstash responded with ${res.status}:`, bodyText);
-      throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+
+      // If Upstash rejects COMMANDS route, retry using token as query param
+      if (bodyText && /COMMANDS|Command is not available/i.test(bodyText)) {
+        // Try /commands?token=...
+        const urlWithToken = `${commandsUrl}?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+        console.log('[upstashGetOrders] retrying with token in query param ->', urlWithToken.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+        res = await fetch(urlWithToken, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: 'GET', args: ['orders'] })
+        });
+
+        if (!res.ok) {
+          bodyText = await res.text().catch(() => '<no-body>');
+          console.error('[upstashGetOrders] retry with ?token also failed:', res.status, bodyText);
+
+          // If still failing and base URL is available, try REST GET endpoint (/get/:key)
+          if (baseUrl) {
+            const restGet = `${baseUrl}/get/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+            console.log('[upstashGetOrders] trying REST GET endpoint ->', restGet.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+            const restRes = await fetch(restGet, { method: 'GET' });
+            if (!restRes.ok) {
+              const restBody = await restRes.text().catch(() => '<no-body>');
+              console.error('[upstashGetOrders] REST GET failed:', restRes.status, restBody);
+              throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+            }
+            const restJson = await restRes.json().catch(() => null);
+            if (!restJson) return [];
+            // restJson may have { result: '...' } or { items: ... }
+            const resultString = restJson.result ?? restJson.value ?? restJson["result"] ?? null;
+            if (!resultString) return [];
+            try {
+              return JSON.parse(resultString);
+            } catch (e) {
+              return [];
+            }
+          }
+
+          throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+        }
+      } else {
+        throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+      }
     }
+
     const json = await res.json();
     // json.result will be string value or null
     if (!json || json.result == null) return [];
@@ -69,12 +122,16 @@ async function upstashGetOrders() {
 
 async function upstashSetOrders(list) {
   const commandsUrl = upstashCommandsUrl();
+  const baseUrl = upstashBaseUrl();
   if (!commandsUrl || !UPSTASH_TOKEN) return false;
   try {
     const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
     console.log('[upstashSetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
+
     const value = JSON.stringify(list);
-    const res = await fetch(commandsUrl, {
+
+    // First attempt: Authorization header against /commands
+    let res = await fetch(commandsUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${UPSTASH_TOKEN}`,
@@ -82,11 +139,51 @@ async function upstashSetOrders(list) {
       },
       body: JSON.stringify({ command: 'SET', args: ['orders', value] })
     });
+
     if (!res.ok) {
-      const bodyText = await res.text().catch(() => '<no-body>');
+      let bodyText = await res.text().catch(() => '<no-body>');
       console.error(`[upstashSetOrders] Upstash responded with ${res.status}:`, bodyText);
-      throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+
+      // If Upstash rejects COMMANDS route, retry using token as query param
+      if (bodyText && /COMMANDS|Command is not available/i.test(bodyText)) {
+        const urlWithToken = `${commandsUrl}?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+        console.log('[upstashSetOrders] retrying with token in query param ->', urlWithToken.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+        res = await fetch(urlWithToken, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: 'SET', args: ['orders', value] })
+        });
+
+        if (!res.ok) {
+          bodyText = await res.text().catch(() => '<no-body>');
+          console.error('[upstashSetOrders] retry with ?token also failed:', res.status, bodyText);
+
+          // try REST-style /set/:key endpoint if available
+          if (baseUrl) {
+            const restSet = `${baseUrl}/set/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+            console.log('[upstashSetOrders] trying REST SET endpoint ->', restSet.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+            // Try posting raw JSON body
+            const restRes = await fetch(restSet, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: value
+            });
+            if (!restRes.ok) {
+              const restBody = await restRes.text().catch(() => '<no-body>');
+              console.error('[upstashSetOrders] REST SET failed:', restRes.status, restBody);
+              throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+            }
+            console.log('[upstashSetOrders] REST SET success');
+            return true;
+          }
+
+          throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+        }
+      } else {
+        throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+      }
     }
+
     const json = await res.json().catch(() => null);
     console.log('[upstashSetOrders] success', json ? json : 'no-json');
     return true;
