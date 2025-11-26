@@ -312,27 +312,6 @@ export const EmailGenerator = () => {
         }
     };
 
-    const handleReorder = async (id: string) => {
-        setLoading(true);
-        setError(null);
-        try {
-            const res = await api.reorderEmailById(id);
-            if (res?.status === "success") {
-                await fetchStoredOrders();
-                setStatusMsg(`Reordered ${res.email ?? id}`);
-                setTimeout(() => setStatusMsg(null), 3000);
-            } else {
-                setError(JSON.stringify(res));
-                setUserError(true);
-            }
-        } catch (e: any) {
-            setError(String(e?.message ?? e));
-            setUserError(true);
-        } finally {
-            setLoading(false);
-        }
-    };
-
     const downloadLastResponse = () => {
         if (!lastRawResponse) return;
         try {
@@ -451,14 +430,6 @@ export const EmailGenerator = () => {
                                         className="rounded border px-2 py-1 text-xs text-danger"
                                     >
                                         Cancel
-                                    </button>
-
-                                    <button
-                                        title="Create a new order using this id as template"
-                                        onClick={() => handleReorder(o.id)}
-                                        className="rounded border px-2 py-1 text-xs"
-                                    >
-                                        Reorder
                                     </button>
                                 </div>
                             </li>
