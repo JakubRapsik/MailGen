@@ -39,7 +39,9 @@ export const EmailGenerator = () => {
 
     const fetchStoredOrders = async () => {
         try {
-            const res = await fetch('/api/stored-orders');
+            // add cache-busting query param to avoid CDN/browser 304 cached responses
+            const url = `/api/stored-orders?_ts=${Date.now()}`;
+            const res = await fetch(url);
             if (!res.ok) {
                 // don't surface this as a persistent error to the user on refresh
                 console.warn(`Failed to fetch stored orders: ${res.status}`);
