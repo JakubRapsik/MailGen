@@ -1,5 +1,5 @@
 // typescriptreact
-import { useEffect, useState , useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "@/components/base/buttons/button";
 import { ButtonUtility } from "@/components/base/buttons/button-utility";
 import api from "@/hooks/use-anymessage-api";
@@ -10,7 +10,16 @@ export const EmailGenerator = () => {
 
     const [countInput, setCountInput] = useState<string>("1");
     const [balance, setBalance] = useState<string | null>(null);
-    const [orders, setOrders] = useState<Array<{ id: string; email?: string; site?: string; status?: string; createdAt?: string; updatedAt?: string }>>([]);
+    const [orders, setOrders] = useState<
+        Array<{
+            id: string;
+            email?: string;
+            site?: string;
+            status?: string;
+            createdAt?: string;
+            updatedAt?: string;
+        }>
+    >([]);
     const [loading, setLoading] = useState(false);
     const [messageStatus, setMessageStatus] = useState<"none" | "waiting" | "received" | "error">("none");
     const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
@@ -22,7 +31,7 @@ export const EmailGenerator = () => {
     const scanningRef = useRef(false);
 
     useEffect(() => {
-        const pending = orders.filter((o) => o.status !== 'success' && o.status !== 'canceled');
+        const pending = orders.filter((o) => o.status !== "success" && o.status !== "canceled");
         if (pending.length === 0) return;
 
         let cancelled = false;
@@ -36,26 +45,21 @@ export const EmailGenerator = () => {
                         const res = await api.getMessage(o.id, false);
                         if (!res) continue;
 
-                        const isRawString = typeof res === 'string' && res.trim().length > 0;
-                        const isObjectMsg =
-                            res && typeof res === 'object' && (
-                                res.status === 'success' ||
-                                res.value === 'html_response' ||
-                                !!res.message
-                            );
+                        const isRawString = typeof res === "string" && res.trim().length > 0;
+                        const isObjectMsg = res && typeof res === "object" && (res.status === "success" || res.value === "html_response" || (res.message || res.result || res.value));
 
                         if (isRawString || isObjectMsg) {
-                            if (isRawString) setLastRawResponse(res);
-                            if (selectedMessageId === o.id) setMessageStatus('received');
+                            if (isRawString) setLastRawResponse(res as string);
+                            if (selectedMessageId === o.id) setMessageStatus("received");
 
                             try {
-                                await fetch(`/api/orders/mark-success?id=${encodeURIComponent(o.id)}`, { method: 'POST' });
+                                await fetch(`/api/orders/mark-success?id=${encodeURIComponent(o.id)}`, { method: "POST" });
                             } catch (e) {
-                                console.warn('[scanOnce] mark-success failed for', o.id, e);
+                                console.warn("[scanOnce] mark-success failed for", o.id, e);
                             }
 
                             await new Promise((r) => setTimeout(r, 600));
-                            await fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e));
+                            await fetchStoredOrders().catch((e) => console.warn("refresh orders failed:", e));
                         }
                     } catch (e) {
                         // ignore per-order errors
@@ -109,7 +113,7 @@ export const EmailGenerator = () => {
                     : [],
             );
         } catch (e: any) {
-            console.warn('Failed to fetch stored orders:', e);
+            console.warn("Failed to fetch stored orders:", e);
         }
     };
 
@@ -123,13 +127,13 @@ export const EmailGenerator = () => {
                 if (res?.status === "success") {
                     setBalance(String(res.balance ?? res.data ?? "0"));
                 } else {
-                    console.warn('Failed to fetch balance on init:', res);
+                    console.warn("Failed to fetch balance on init:", res);
                     setBalance(null);
-                    showToast('Failed to load balance', 'warning');
+                    showToast("Failed to load balance", "warning");
                 }
             } catch (e: any) {
-                console.warn('Failed to fetch balance on init:', e);
-                showToast('Failed to load balance', 'warning');
+                console.warn("Failed to fetch balance on init:", e);
+                showToast("Failed to load balance", "warning");
             } finally {
                 setLoading(false);
             }
@@ -139,26 +143,27 @@ export const EmailGenerator = () => {
 
         const intervalMs = 10000;
         const id = setInterval(() => {
-            fetchStoredOrders().catch((e) => console.warn('Failed to refresh orders via poll:', e));
+            fetchStoredOrders().catch((e) => console.warn("Failed to refresh orders via poll:", e));
         }, intervalMs);
         return () => clearInterval(id);
     }, []);
 
     useEffect(() => {
         if (!selectedMessageId) return;
-        if (messageStatus !== 'waiting') return;
+        if (messageStatus !== "waiting") return;
 
         let cancelled = false;
         const interval = setInterval(async () => {
             try {
                 const res = await api.getMessage(selectedMessageId, false);
                 if (cancelled) return;
-                if (res && typeof res === 'object' && res.status === 'success') {
-                    setMessageStatus('received');
-                } else if (typeof res === 'string') {
-                    setMessageStatus('received');
+                if (res && typeof res === "object" && res.status === "success") {
+                    setMessageStatus("received");
+                } else if (typeof res === "string") {
+                    setMessageStatus("received");
                 }
             } catch (e) {
+                // ignore
             }
         }, 10000);
 
@@ -183,12 +188,12 @@ export const EmailGenerator = () => {
                 const res = await api.orderEmail(FIXED_SITE, FIXED_DOMAIN);
                 if (res?.status === "success") {
                     succeeded++;
-                    showToast(`Ordered ${res.email}`, 'success', 2000);
+                    showToast(`Ordered ${res.email}`, "success", 2000);
                 } else if (typeof res === "string") {
                     setLastRawResponse(res);
-                    showToast('Server returned an HTML response — click Download to inspect', 'warning');
-                } else if (res && typeof res === 'object' && res.value === 'html_response') {
-                    showToast(`HTML response (len ${res.length ?? 'unknown'})`, 'warning');
+                    showToast("Server returned an HTML response — click Download to inspect", "warning");
+                } else if (res && typeof res === "object" && res.value === "html_response") {
+                    showToast(`HTML response (len ${res.length ?? "unknown"})`, "warning");
                 } else {
                     setError(JSON.stringify(res));
                     setUserError(true);
@@ -219,12 +224,12 @@ export const EmailGenerator = () => {
                 showToast("Empty response", "warning");
             } else if (typeof res === "string") {
                 setLastRawResponse(res);
-                showToast('Message returned as raw HTML — open or download to view', 'info');
+                showToast("Message returned as raw HTML — open or download to view", "info");
                 setMessageStatus("received");
                 try {
-                    await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' });
+                    await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: "POST" });
                 } catch (e) {
-                    console.warn('[handleGetMessage] mark-success failed for', id, e);
+                    console.warn("[handleGetMessage] mark-success failed for", id, e);
                 }
                 await fetchStoredOrders();
             } else if (res?.status === "error") {
@@ -235,12 +240,12 @@ export const EmailGenerator = () => {
                     setError(JSON.stringify(res));
                     setUserError(true);
                 }
-            } else if (res?.status === "success" || res?.value === 'html_response') {
+            } else if (res?.status === "success" || res?.value === "html_response") {
                 setMessageStatus("received");
                 try {
-                    await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' });
+                    await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: "POST" });
                 } catch (e) {
-                    console.warn('[handleGetMessage] mark-success failed for', id, e);
+                    console.warn("[handleGetMessage] mark-success failed for", id, e);
                 }
                 await fetchStoredOrders();
             } else {
@@ -260,7 +265,10 @@ export const EmailGenerator = () => {
     const openPreviewHtml = async (id: string) => {
         try {
             const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); return; }
+            if (!res.ok) {
+                setError(`Preview fetch failed: ${res.status}`);
+                return;
+            }
             const text = await res.text();
             const blob = new Blob([text], { type: "text/html" });
             const url = URL.createObjectURL(blob);
@@ -274,7 +282,10 @@ export const EmailGenerator = () => {
     const downloadPreviewHtml = async (id: string) => {
         try {
             const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); return; }
+            if (!res.ok) {
+                setError(`Preview fetch failed: ${res.status}`);
+                return;
+            }
             const text = await res.text();
             const blob = new Blob([text], { type: "text/html" });
             const url = URL.createObjectURL(blob);
@@ -312,36 +323,61 @@ export const EmailGenerator = () => {
         }
     };
 
+    const handleReorder = async (id: string) => {
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await api.reorderEmailById(id);
+            if (res?.status === "success") {
+                await fetchStoredOrders();
+                setStatusMsg(`Reordered ${res.email ?? id}`);
+                setTimeout(() => setStatusMsg(null), 3000);
+            } else {
+                setError(JSON.stringify(res));
+                setUserError(true);
+            }
+        } catch (e: any) {
+            setError(String(e?.message ?? e));
+            setUserError(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const downloadLastResponse = () => {
         if (!lastRawResponse) return;
         try {
-            const blob = new Blob([lastRawResponse], { type: 'text/html' });
+            const blob = new Blob([lastRawResponse], { type: "text/html" });
             const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
+            const a = document.createElement("a");
             a.href = url;
-            a.download = 'raw-response.html';
+            a.download = "raw-response.html";
             document.body.appendChild(a);
             a.click();
             a.remove();
             URL.revokeObjectURL(url);
         } catch (e) {
-            showToast('Failed to download raw response', 'error');
+            showToast("Failed to download raw response", "error");
         }
     };
 
     const openLastResponse = () => {
         if (!lastRawResponse) return;
-        const blob = new Blob([lastRawResponse], { type: 'text/html' });
+        const blob = new Blob([lastRawResponse], { type: "text/html" });
         const url = URL.createObjectURL(blob);
-        window.open(url, '_blank');
+        window.open(url, "_blank");
     };
 
     return (
         <div className="flex h-dvh flex-col">
             <div className="flex gap-4 p-4">
                 <div className="flex items-center gap-2">
-                    <div className="text-sm">Site: <strong className="ml-1">{FIXED_SITE}</strong></div>
-                    <div className="text-sm">Domain: <strong className="ml-1">{FIXED_DOMAIN}</strong></div>
+                    <div className="text-sm">
+                        Site: <strong className="ml-1">{FIXED_SITE}</strong>
+                    </div>
+                    <div className="text-sm">
+                        Domain: <strong className="ml-1">{FIXED_DOMAIN}</strong>
+                    </div>
                 </div>
                 <input
                     type="text"
@@ -376,112 +412,99 @@ export const EmailGenerator = () => {
 
                 <div className="ml-auto flex items-center gap-2">
                     <div className="text-sm">Balance: {loading ? "..." : balance ?? "-"}</div>
-                    <ButtonUtility onClick={() => fetchStoredOrders()} size="sm" color="secondary">Refresh Orders</ButtonUtility>
+                    <ButtonUtility onClick={() => fetchStoredOrders()} size="sm" color="secondary">
+                        Refresh Orders
+                    </ButtonUtility>
                 </div>
             </div>
 
             {statusMsg && <div className="p-2 text-sm text-success">{statusMsg}</div>}
             {orderingProgress !== null && (
-                <div className="p-2 text-sm">Ordering {orderingProgress} / {Math.max(1, Math.min(50, Math.floor(Number(countInput || 1))))}</div>
+                <div className="p-2 text-sm">
+                    Ordering {orderingProgress} / {Math.max(1, Math.min(50, Math.floor(Number(countInput || 1))))}
+                </div>
             )}
 
-            <div className="flex flex-1 gap-4 p-4">
-                <div className="w-1/3 overflow-auto rounded border p-2">
-                    <h3 className="text-sm font-semibold">Orders</h3>
-                    {orders.length === 0 && <div className="text-sm text-tertiary">No orders yet</div>}
-                    <ul className="mt-2 space-y-2">
-                        {orders.map((o) => (
-                            <li key={o.id} className="flex items-start justify-between gap-2 rounded p-2 hover:bg-surface-50">
-                                <div>
-                                    <div className="text-sm font-medium">{o.email ?? o.id}</div>
-                                    <div className="text-xs text-tertiary">
-                                        {o.site ?? FIXED_SITE} · {o.status ?? 'pending'}{o.updatedAt ? ` · ${new Date(o.updatedAt).toLocaleString()}` : ''}
-                                    </div>
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <button
-                                        title="Fetch message now"
-                                        onClick={() => handleGetMessage(o.id)}
-                                        className="rounded border px-2 py-1 text-xs"
-                                    >
-                                        Get message
-                                    </button>
-
-                                    <button
-                                        title="Open HTML preview (uses preview=1)"
-                                        onClick={() => openPreviewHtml(o.id)}
-                                        className="rounded border px-2 py-1 text-xs"
-                                    >
-                                        Preview HTML
-                                    </button>
-
-                                    <button
-                                        title="Download HTML preview"
-                                        onClick={() => downloadPreviewHtml(o.id)}
-                                        className="rounded border px-2 py-1 text-xs"
-                                    >
-                                        Download HTML
-                                    </button>
-
-                                    <button
-                                        title="Cancel this activation/order"
-                                        onClick={() => handleCancel(o.id)}
-                                        className="rounded border px-2 py-1 text-xs text-danger"
-                                    >
-                                        Cancel
-                                    </button>
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-
-                <div className="flex-1 overflow-auto rounded border p-4">
-                    <div className="flex items-center justify-between">
-                        <h3 className="text-sm font-semibold">Message</h3>
-                        <div className="flex items-center gap-2">
-                            {selectedMessageId && <div className="text-xs text-tertiary">Selected: {selectedMessageId}</div>}
-                        </div>
-                    </div>
-
-                    {error && userError && <div className="mt-2 text-sm text-danger">{error}</div>}
-                    {error && !userError && <div className="mt-2 text-sm text-tertiary">{error}</div>}
-
-                    {lastRawResponse && (
-                        <div className="mt-2 flex gap-2">
-                            <button onClick={openLastResponse} className="rounded border px-2 py-1 text-sm">Open raw</button>
-                            <button onClick={downloadLastResponse} className="rounded border px-2 py-1 text-sm">Download raw response</button>
-                        </div>
-                    )}
-
-                    <div aria-live="polite" className="fixed right-4 bottom-4 z-50 flex flex-col-reverse gap-2">
-                        {toasts.map((t) => (
-                            <div key={t.id} className={`max-w-xs w-full rounded p-2 shadow ${t.variant === 'success' ? 'bg-success-50 text-success' : t.variant === 'error' ? 'bg-error-50 text-error' : t.variant === 'warning' ? 'bg-warning-50 text-warning' : 'bg-brand-50 text-brand-700'}`}>
-                                <div className="flex justify-between items-center">
-                                    <div className="text-sm">{t.message}</div>
-                                    <button onClick={() => removeToast(t.id)} className="ml-2 text-xs">x</button>
+            {/* Orders take full page now */}
+            <div className="flex-1 overflow-auto rounded border p-4">
+                <h3 className="text-sm font-semibold">Orders</h3>
+                {orders.length === 0 && <div className="text-sm text-tertiary">No orders yet</div>}
+                <ul className="mt-2 space-y-0">
+                    {orders.map((o, idx) => (
+                        <li key={o.id} className="flex items-start justify-between gap-2 py-3">
+                            <div className="pr-4">
+                                <div className="text-sm font-medium">{o.email ?? o.id}</div>
+                                <div className="text-xs text-tertiary">
+                                    {o.site ?? FIXED_SITE} · {o.status ?? "pending"}
+                                    {o.updatedAt ? ` · ${new Date(o.updatedAt).toLocaleString()}` : ""}
                                 </div>
                             </div>
-                        ))}
-                    </div>
 
-                    {messageStatus === "received" && selectedMessageId ? (
-                        <div className="mt-4">
-                            <div className="text-sm">Message received for {selectedMessageId}</div>
-                            <div className="mt-2">
-                                <Button onClick={() => openPreviewHtml(selectedMessageId)}>Open Preview</Button>
-                                <ButtonUtility onClick={() => downloadPreviewHtml(selectedMessageId)} size="sm">Download</ButtonUtility>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    title="Fetch message now"
+                                    onClick={() => handleGetMessage(o.id)}
+                                    className="rounded border px-2 py-1 text-xs"
+                                >
+                                    Get message
+                                </button>
+
+                                <button
+                                    title="Open HTML preview (uses preview=1)"
+                                    onClick={() => openPreviewHtml(o.id)}
+                                    className="rounded border px-2 py-1 text-xs"
+                                >
+                                    Preview HTML
+                                </button>
+
+                                <button
+                                    title="Download HTML preview"
+                                    onClick={() => downloadPreviewHtml(o.id)}
+                                    className="rounded border px-2 py-1 text-xs"
+                                >
+                                    Download HTML
+                                </button>
+
+                                <button
+                                    title="Cancel this activation/order"
+                                    onClick={() => handleCancel(o.id)}
+                                    className="rounded border px-2 py-1 text-xs text-danger"
+                                >
+                                    Cancel
+                                </button>
+
+                                <button
+                                    title="Create a new order using this id as template"
+                                    onClick={() => handleReorder(o.id)}
+                                    className="rounded border px-2 py-1 text-xs"
+                                >
+                                    Reorder
+                                </button>
                             </div>
+
+                            {/* separator between items */}
+                            {idx < orders.length - 1 && <div className="w-full border-t mt-3" />}
+                        </li>
+                    ))}
+                </ul>
+            </div>
+
+            {/* toasts */}
+            <div aria-live="polite" className="fixed right-4 bottom-4 z-50 flex flex-col-reverse gap-2">
+                {toasts.map((t) => (
+                    <div
+                        key={t.id}
+                        className={`max-w-xs w-full rounded p-2 shadow ${t.variant === "success" ? "bg-success-50 text-success" : t.variant === "error" ? "bg-error-50 text-error" : t.variant === "warning" ? "bg-warning-50 text-warning" : "bg-brand-50 text-brand-700"
+                        }`}
+                    >
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm">{t.message}</div>
+                            <button onClick={() => removeToast(t.id)} className="text-xs underline">
+                                Close
+                            </button>
                         </div>
-                    ) : messageStatus === "waiting" ? (
-                        <div className="mt-4 text-sm text-tertiary">Message not received yet — try again later</div>
-                    ) : messageStatus === "error" ? (
-                        <div className="mt-4 text-sm text-danger">{error ?? "Failed to fetch message"}</div>
-                    ) : (
-                        <div className="mt-4 text-sm text-tertiary">No message selected</div>
-                    )}
-                </div>
+                    </div>
+                ))}
             </div>
         </div>
     );
