@@ -52,8 +52,14 @@ export const EmailGenerator = () => {
 
                         if (isRawString || isObjectMsg) {
                             if (isRawString) setLastRawResponse(res);
-                            // if the user is currently viewing this id, show it immediately
                             if (selectedMessageId === o.id) setMessageStatus('received');
+
+                            // ensure server marks status as success immediately
+                            try {
+                                await fetch(`/api/orders/mark-success?id=${encodeURIComponent(o.id)}`, { method: 'POST' });
+                            } catch (e) {
+                                console.warn('[scanOnce] mark-success failed for', o.id, e);
+                            }
 
                             // small delay to avoid racing DB write, then refresh orders so UI sees 'success'
                             await new Promise((r) => setTimeout(r, 600));
@@ -234,35 +240,39 @@ export const EmailGenerator = () => {
         setMessageStatus("none");
         setSelectedMessageId(id);
         try {
-            // fetch lightweight status (no preview) to check if message arrived
-            const res = await api.getMessage(id, false);
+            // annotate res as any to avoid TS2339 on `.status`
+            const res: any = await api.getMessage(id, false);
+
             if (res == null) {
                 setMessageStatus("error");
                 showToast("Empty response", "warning");
             } else if (typeof res === "string") {
-                // raw HTML response for message (we didn't request preview). Store it and offer actions.
+                // ... existing logic for string
                 setLastRawResponse(res);
                 showToast('Message returned as raw HTML — open or download to view', 'info');
                 setMessageStatus("received");
-                // message received -> refresh stored orders to update status
+                try {
+                    await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' });
+                } catch (e) {
+                    console.warn('[handleGetMessage] mark-success failed for', id, e);
+                }
                 await fetchStoredOrders();
             } else if (res?.status === "error") {
-                 if (String(res.value).toLowerCase().includes("wait")) {
-                     setMessageStatus("waiting");
-                 } else {
-                     setMessageStatus("error");
-                     setError(JSON.stringify(res));
-                     setUserError(true);
-                 }
-             } else if (res?.status === "success") {
-                 setMessageStatus("received");
-                 // refresh stored orders to mark this id as success
-                 await fetchStoredOrders();
-             } else {
-                 setMessageStatus("error");
-                 setError(JSON.stringify(res));
-                 setUserError(true);
-             }
+                if (String(res.value).toLowerCase().includes("wait")) {
+                    setMessageStatus("waiting");
+                } else {
+                    setMessageStatus("error");
+                    setError(JSON.stringify(res));
+                    setUserError(true);
+                }
+            } else if (res?.status === "success") {
+                setMessageStatus("received");
+                await fetchStoredOrders();
+            } else {
+                setMessageStatus("error");
+                setError(JSON.stringify(res));
+                setUserError(true);
+            }
         } catch (e: any) {
             setMessageStatus("error");
             setError(String(e?.message ?? e));
