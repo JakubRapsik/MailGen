@@ -29,32 +29,37 @@ export default async function handler(req, res) {
             try {
                 if (requestedId) {
                     let detected = false;
+                    const body = r?.body;
 
                     // raw string body -> treat as message
-                    if (typeof r?.body === 'string' && r.body.trim().length > 0) {
+                    if (typeof body === 'string' && body.trim().length > 0) {
                         detected = true;
                     }
 
                     // buffer/stream -> treat as message
-                    if (!detected && (Buffer.isBuffer?.(r?.body) || (r?.body && typeof r.body.pipe === 'function'))) {
+                    if (!detected && (Buffer.isBuffer?.(body) || (body && typeof body.pipe === 'function'))) {
                         detected = true;
                     }
 
                     // object body -> various heuristics
-                    if (!detected && r?.body && typeof r.body === 'object') {
+                    if (!detected && body && typeof body === 'object') {
                         // direct success indicator
-                        if (r.body.status === 'success') detected = true;
-                        // upstream JSON with message field
-                        if (!detected && (r.body.message || r.body.result || r.body.value)) detected = true;
+                        if (body.status === 'success') detected = true;
+                        // upstream JSON with message field (some upstreams return HTML inside message)
+                        if (!detected && (body.message || body.result || body.value)) detected = true;
                         // forward may return html_response marker
-                        if (!detected && r.body.value === 'html_response') detected = true;
+                        if (!detected && body.value === 'html_response') detected = true;
                     }
 
                     if (detected) {
-                        await updateOrderStatus(requestedId, 'success');
-                        console.log('[api/email/getmessage] updating order status ->', requestedId, 'to success (detected response)');
+                        try {
+                            await updateOrderStatus(requestedId, 'success');
+                            console.log('[api/email/getmessage] updated order status ->', requestedId, 'to success (detected)');
+                        } catch (e) {
+                            console.error('[api/email/getmessage] failed to update order status:', e);
+                        }
                     } else {
-                        console.log('[api/email/getmessage] will not update order status; no message detected', r?.body);
+                        console.log('[api/email/getmessage] will not update order status; upstream did not return success/message', body);
                     }
                 } else {
                     console.log('[api/email/getmessage] no id in request query; skipping status update');
