@@ -1,5 +1,5 @@
 // javascript
-import { forward, updateOrderStatus } from '../_shared.js';
+import { forward, updateOrderStatus, isLikelyErrorObject } from '../_shared.js';
 
 // Helper to set a header on the response in a runtime-agnostic way
 function setResHeader(res, name, value) {
@@ -45,10 +45,10 @@ export default async function handler(req, res) {
                     if (!detected && body && typeof body === 'object') {
                         // direct success indicator
                         if (body.status === 'success') detected = true;
-                        // upstream JSON with message field (some upstreams return HTML inside message)
-                        if (!detected && (body.message || body.result || body.value)) detected = true;
                         // forward may return html_response marker
                         if (!detected && body.value === 'html_response') detected = true;
+                        // upstream JSON with message/result/value — only treat as detected when not a known error object
+                        if (!detected && (body.message || body.result || body.value) && !isLikelyErrorObject(body)) detected = true;
                     }
 
                     if (detected) {

@@ -1,3 +1,4 @@
+// javascript
 import fs from 'fs/promises';
 import path from 'path';
 import fetch from 'node-fetch';
@@ -6,11 +7,11 @@ import { kv } from '@vercel/kv';
 // Try to use official Upstash SDK when available for more reliable auth
 let UpstashRedis;
 try {
-  // lazy require so local dev without dependency won't crash static analysis
-  // eslint-disable-next-line import/no-extraneous-dependencies, node/no-extraneous-import
-  UpstashRedis = await import('@upstash/redis').then(m => m.Redis).catch(() => null);
+    // lazy require so local dev without dependency won't crash static analysis
+    // eslint-disable-next-line import/no-extraneous-dependencies, node/no-extraneous-import
+    UpstashRedis = await import('@upstash/redis').then(m => m.Redis).catch(() => null);
 } catch (e) {
-  UpstashRedis = null;
+    UpstashRedis = null;
 }
 
 const API_BASE = 'https://api.anymessage.shop';
@@ -25,267 +26,267 @@ const TMP_ORDERS_PATH = path.join(os.tmpdir(), 'orders.json');
 
 // compute Upstash commands endpoint robustly
 function upstashCommandsUrl() {
-  if (!UPSTASH_URL) return null;
-  // if the provided URL already contains /commands, use as-is
-  if (UPSTASH_URL.includes('/commands')) return UPSTASH_URL.replace(/\/+$|\?token=.*$/,'');
-  return UPSTASH_URL.replace(/\/+$/, '') + '/commands';
+    if (!UPSTASH_URL) return null;
+    // if the provided URL already contains /commands, use as-is
+    if (UPSTASH_URL.includes('/commands')) return UPSTASH_URL.replace(/\/+$|\?token=.*$/,'');
+    return UPSTASH_URL.replace(/\/+$/, '') + '/commands';
 }
 
 function upstashBaseUrl() {
-  if (!UPSTASH_URL) return null;
-  // remove trailing /commands if present
-  return UPSTASH_URL.replace(/\/commands\/?$/i, '').replace(/\/+$/, '');
+    if (!UPSTASH_URL) return null;
+    // remove trailing /commands if present
+    return UPSTASH_URL.replace(/\/commands\/?$/i, '').replace(/\/+$/, '');
 }
 
 async function ensureStorage() {
-  try {
-    await fs.mkdir(STORAGE_DIR, { recursive: true });
     try {
-      await fs.access(ORDERS_PATH);
+        await fs.mkdir(STORAGE_DIR, { recursive: true });
+        try {
+            await fs.access(ORDERS_PATH);
+        } catch (e) {
+            await fs.writeFile(ORDERS_PATH, JSON.stringify([]), 'utf-8');
+        }
     } catch (e) {
-      await fs.writeFile(ORDERS_PATH, JSON.stringify([]), 'utf-8');
+        console.error('Failed to ensure storage dir:', e);
     }
-  } catch (e) {
-    console.error('Failed to ensure storage dir:', e);
-  }
 }
 
 // helper: Upstash SDK client
 // Use a cached singleton to avoid creating multiple clients across requests
 let _cachedUpstashClient = null;
 function getUpstashClient() {
-  if (_cachedUpstashClient) return _cachedUpstashClient;
+    if (_cachedUpstashClient) return _cachedUpstashClient;
 
-  if (!UpstashRedis) return null;
+    if (!UpstashRedis) return null;
 
-  try {
-    // Prefer the SDK helper that reads from env (Redis.fromEnv()) if available
-    if (typeof UpstashRedis.fromEnv === 'function') {
-      try {
-        _cachedUpstashClient = UpstashRedis.fromEnv();
-        return _cachedUpstashClient;
-      } catch (e) {
-        // If fromEnv fails for any reason, fall back to explicit constructor below
-        console.warn('[getUpstashClient] Redis.fromEnv() failed, falling back to explicit constructor:', e?.message ?? e);
-      }
+    try {
+        // Prefer the SDK helper that reads from env (Redis.fromEnv()) if available
+        if (typeof UpstashRedis.fromEnv === 'function') {
+            try {
+                _cachedUpstashClient = UpstashRedis.fromEnv();
+                return _cachedUpstashClient;
+            } catch (e) {
+                // If fromEnv fails for any reason, fall back to explicit constructor below
+                console.warn('[getUpstashClient] Redis.fromEnv() failed, falling back to explicit constructor:', e?.message ?? e);
+            }
+        }
+
+        // If fromEnv isn't available or failed, try constructing with explicit url/token
+        if (UPSTASH_URL && UPSTASH_TOKEN) {
+            _cachedUpstashClient = new UpstashRedis({ url: UPSTASH_URL, token: UPSTASH_TOKEN });
+            return _cachedUpstashClient;
+        }
+
+        // Last attempt: if REDIS_URL style (e.g., rediss://...) is present and UpstashRedis accepts it
+        if (process.env.REDIS_URL && typeof UpstashRedis.fromEnv !== 'function') {
+            try {
+                _cachedUpstashClient = new UpstashRedis({ url: process.env.REDIS_URL, token: process.env.REDIS_PASSWORD || UPSTASH_TOKEN });
+                return _cachedUpstashClient;
+            } catch (e) {
+                // ignore and return null below
+            }
+        }
+
+        return null;
+    } catch (e) {
+        console.error('[getUpstashClient] failed to create client:', e?.message ?? e);
+        return null;
     }
-
-    // If fromEnv isn't available or failed, try constructing with explicit url/token
-    if (UPSTASH_URL && UPSTASH_TOKEN) {
-      _cachedUpstashClient = new UpstashRedis({ url: UPSTASH_URL, token: UPSTASH_TOKEN });
-      return _cachedUpstashClient;
-    }
-
-    // Last attempt: if REDIS_URL style (e.g., rediss://...) is present and UpstashRedis accepts it
-    if (process.env.REDIS_URL && typeof UpstashRedis.fromEnv !== 'function') {
-      try {
-        _cachedUpstashClient = new UpstashRedis({ url: process.env.REDIS_URL, token: process.env.REDIS_PASSWORD || UPSTASH_TOKEN });
-        return _cachedUpstashClient;
-      } catch (e) {
-        // ignore and return null below
-      }
-    }
-
-    return null;
-  } catch (e) {
-    console.error('[getUpstashClient] failed to create client:', e?.message ?? e);
-    return null;
-  }
 }
 
 export { getUpstashClient };
 
 async function upstashGetOrders() {
-  // prefer SDK client if available
-  const sdk = getUpstashClient();
-  if (sdk) {
-    try {
-      console.log('[upstashGetOrders] using Upstash SDK client');
-      const val = await sdk.get('orders');
-      if (!val) return [];
-      // sdk may return object/value directly or JSON string
-      if (typeof val === 'string') {
+    // prefer SDK client if available
+    const sdk = getUpstashClient();
+    if (sdk) {
         try {
-          return JSON.parse(val);
+            console.log('[upstashGetOrders] using Upstash SDK client');
+            const val = await sdk.get('orders');
+            if (!val) return [];
+            // sdk may return object/value directly or JSON string
+            if (typeof val === 'string') {
+                try {
+                    return JSON.parse(val);
+                } catch (e) {
+                    console.warn('[upstashGetOrders] failed to parse KV JSON, falling back to Upstash/filesystem', e?.message ?? e);
+                    // continue to fallbacks below (do not return [] here)
+                }
+            }
+            // if it's object/array already
+            return Array.isArray(val) ? val : [];
         } catch (e) {
-          console.warn('[upstashGetOrders] failed to parse KV JSON, falling back to Upstash/filesystem', e?.message ?? e);
-          // continue to fallbacks below (do not return [] here)
+            console.error('[upstashGetOrders] SDK client error, falling back to HTTP:', e);
+            // fall through to HTTP fallback
         }
-      }
-      // if it's object/array already
-      return Array.isArray(val) ? val : [];
-    } catch (e) {
-      console.error('[upstashGetOrders] SDK client error, falling back to HTTP:', e);
-      // fall through to HTTP fallback
     }
-  }
 
-  // Fallback to existing HTTP logic if SDK isn't usable
-  const commandsUrl = upstashCommandsUrl();
-  const baseUrl = upstashBaseUrl();
-  if (!commandsUrl || !UPSTASH_TOKEN) return null;
-  try {
-    const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
-    console.log('[upstashGetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
+    // Fallback to existing HTTP logic if SDK isn't usable
+    const commandsUrl = upstashCommandsUrl();
+    const baseUrl = upstashBaseUrl();
+    if (!commandsUrl || !UPSTASH_TOKEN) return null;
+    try {
+        const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
+        console.log('[upstashGetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
 
-    // First attempt: Authorization header against /commands
-    let res = await fetch(commandsUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${UPSTASH_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ command: 'GET', args: ['orders'] })
-    });
-
-    if (!res.ok) {
-      let bodyText = await res.text().catch(() => '<no-body>');
-      console.error(`[upstashGetOrders] Upstash responded with ${res.status}:`, bodyText);
-
-      // If Upstash rejects COMMANDS route, retry using token as query param
-      if (bodyText && /COMMANDS|Command is not available/i.test(bodyText)) {
-        // Try /commands?token=...
-        const urlWithToken = `${commandsUrl}?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
-        console.log('[upstashGetOrders] retrying with token in query param ->', urlWithToken.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
-        res = await fetch(urlWithToken, {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: 'GET', args: ['orders'] })
+        // First attempt: Authorization header against /commands
+        let res = await fetch(commandsUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${UPSTASH_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ command: 'GET', args: ['orders'] })
         });
 
         if (!res.ok) {
-          bodyText = await res.text().catch(() => '<no-body>');
-          console.error('[upstashGetOrders] retry with ?token also failed:', res.status, bodyText);
+            let bodyText = await res.text().catch(() => '<no-body>');
+            console.error(`[upstashGetOrders] Upstash responded with ${res.status}:`, bodyText);
 
-          // If still failing and base URL is available, try REST GET endpoint (/get/:key)
-          if (baseUrl) {
-            const restGet = `${baseUrl}/get/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
-            console.log('[upstashGetOrders] trying REST GET endpoint ->', restGet.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
-            const restRes = await fetch(restGet, { method: 'GET' });
-            if (!restRes.ok) {
-              const restBody = await restRes.text().catch(() => '<no-body>');
-              console.error('[upstashGetOrders] REST GET failed:', restRes.status, restBody);
-              throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
-            }
-            const restJson = await restRes.json().catch(() => null);
-            if (!restJson) return [];
-            // restJson may have { result: '...' } or { items: ... }
-            const resultString = restJson.result ?? restJson.value ?? restJson["result"] ?? null;
-            if (!resultString) return [];
-            try {
-              return JSON.parse(resultString);
-            } catch (e) {
-              return [];
-            }
-          }
+            // If Upstash rejects COMMANDS route, retry using token as query param
+            if (bodyText && /COMMANDS|Command is not available/i.test(bodyText)) {
+                // Try /commands?token=...
+                const urlWithToken = `${commandsUrl}?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+                console.log('[upstashGetOrders] retrying with token in query param ->', urlWithToken.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+                res = await fetch(urlWithToken, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'GET', args: ['orders'] })
+                });
 
-          throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+                if (!res.ok) {
+                    bodyText = await res.text().catch(() => '<no-body>');
+                    console.error('[upstashGetOrders] retry with ?token also failed:', res.status, bodyText);
+
+                    // If still failing and base URL is available, try REST GET endpoint (/get/:key)
+                    if (baseUrl) {
+                        const restGet = `${baseUrl}/get/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+                        console.log('[upstashGetOrders] trying REST GET endpoint ->', restGet.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+                        const restRes = await fetch(restGet, { method: 'GET' });
+                        if (!restRes.ok) {
+                            const restBody = await restRes.text().catch(() => '<no-body>');
+                            console.error('[upstashGetOrders] REST GET failed:', restRes.status, restBody);
+                            throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+                        }
+                        const restJson = await restRes.json().catch(() => null);
+                        if (!restJson) return [];
+                        // restJson may have { result: '...' } or { items: ... }
+                        const resultString = restJson.result ?? restJson.value ?? restJson["result"] ?? null;
+                        if (!resultString) return [];
+                        try {
+                            return JSON.parse(resultString);
+                        } catch (e) {
+                            return [];
+                        }
+                    }
+
+                    throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+                }
+            } else {
+                throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+            }
         }
-      } else {
-        throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
-      }
-    }
 
-    const json = await res.json();
-    // json.result will be string value or null
-    if (!json || json.result == null) return [];
-    try {
-      return JSON.parse(json.result);
+        const json = await res.json();
+        // json.result will be string value or null
+        if (!json || json.result == null) return [];
+        try {
+            return JSON.parse(json.result);
+        } catch (e) {
+            // if stored as plain string, return as empty array
+            return [];
+        }
     } catch (e) {
-      // if stored as plain string, return as empty array
-      return [];
+        console.error('Upstash GET error:', e);
+        return null;
     }
-  } catch (e) {
-    console.error('Upstash GET error:', e);
-    return null;
-  }
 }
 
 async function upstashSetOrders(list) {
-  // prefer SDK client if available
-  const sdk = getUpstashClient();
-  if (sdk) {
-    try {
-      console.log('[upstashSetOrders] using Upstash SDK client');
-      await sdk.set('orders', JSON.stringify(list));
-      return true;
-    } catch (e) {
-      console.error('[upstashSetOrders] SDK client error, falling back to HTTP:', e);
-      // fallthrough to HTTP fallback
+    // prefer SDK client if available
+    const sdk = getUpstashClient();
+    if (sdk) {
+        try {
+            console.log('[upstashSetOrders] using Upstash SDK client');
+            await sdk.set('orders', JSON.stringify(list));
+            return true;
+        } catch (e) {
+            console.error('[upstashSetOrders] SDK client error, falling back to HTTP:', e);
+            // fallthrough to HTTP fallback
+        }
     }
-  }
 
-  // Fallback to existing HTTP logic if SDK isn't usable
-  const commandsUrl = upstashCommandsUrl();
-  const baseUrl = upstashBaseUrl();
-  if (!commandsUrl || !UPSTASH_TOKEN) return false;
-  try {
-    const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
-    console.log('[upstashSetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
+    // Fallback to existing HTTP logic if SDK isn't usable
+    const commandsUrl = upstashCommandsUrl();
+    const baseUrl = upstashBaseUrl();
+    if (!commandsUrl || !UPSTASH_TOKEN) return false;
+    try {
+        const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
+        console.log('[upstashSetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
 
-    const value = JSON.stringify(list);
+        const value = JSON.stringify(list);
 
-    // First attempt: Authorization header against /commands
-    let res = await fetch(commandsUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${UPSTASH_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ command: 'SET', args: ['orders', value] })
-    });
-
-    if (!res.ok) {
-      let bodyText = await res.text().catch(() => '<no-body>');
-      console.error(`[upstashSetOrders] Upstash responded with ${res.status}:`, bodyText);
-
-      // If Upstash rejects COMMANDS route, retry using token as query param
-      if (bodyText && /COMMANDS|Command is not available/i.test(bodyText)) {
-        const urlWithToken = `${commandsUrl}?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
-        console.log('[upstashSetOrders] retrying with token in query param ->', urlWithToken.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
-        res = await fetch(urlWithToken, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: 'SET', args: ['orders', value] })
+        // First attempt: Authorization header against /commands
+        let res = await fetch(commandsUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${UPSTASH_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ command: 'SET', args: ['orders', value] })
         });
 
         if (!res.ok) {
-          bodyText = await res.text().catch(() => '<no-body>');
-          console.error('[upstashSetOrders] retry with ?token also failed:', res.status, bodyText);
+            let bodyText = await res.text().catch(() => '<no-body>');
+            console.error(`[upstashSetOrders] Upstash responded with ${res.status}:`, bodyText);
 
-          // try REST-style /set/:key endpoint if available
-          if (baseUrl) {
-            const restSet = `${baseUrl}/set/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
-            console.log('[upstashSetOrders] trying REST SET endpoint ->', restSet.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
-            // Try posting raw JSON body
-            const restRes = await fetch(restSet, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: value
-            });
-            if (!restRes.ok) {
-              const restBody = await restRes.text().catch(() => '<no-body>');
-              console.error('[upstashSetOrders] REST SET failed:', restRes.status, restBody);
-              throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+            // If Upstash rejects COMMANDS route, retry using token as query param
+            if (bodyText && /COMMANDS|Command is not available/i.test(bodyText)) {
+                const urlWithToken = `${commandsUrl}?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+                console.log('[upstashSetOrders] retrying with token in query param ->', urlWithToken.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+                res = await fetch(urlWithToken, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'SET', args: ['orders', value] })
+                });
+
+                if (!res.ok) {
+                    bodyText = await res.text().catch(() => '<no-body>');
+                    console.error('[upstashSetOrders] retry with ?token also failed:', res.status, bodyText);
+
+                    // try REST-style /set/:key endpoint if available
+                    if (baseUrl) {
+                        const restSet = `${baseUrl}/set/orders?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
+                        console.log('[upstashSetOrders] trying REST SET endpoint ->', restSet.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
+                        // Try posting raw JSON body
+                        const restRes = await fetch(restSet, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: value
+                        });
+                        if (!restRes.ok) {
+                            const restBody = await restRes.text().catch(() => '<no-body>');
+                            console.error('[upstashSetOrders] REST SET failed:', restRes.status, restBody);
+                            throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+                        }
+                        console.log('[upstashSetOrders] REST SET success');
+                        return true;
+                    }
+
+                    throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+                }
+            } else {
+                throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
             }
-            console.log('[upstashSetOrders] REST SET success');
-            return true;
-          }
-
-          throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
         }
-      } else {
-        throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
-      }
-    }
 
-    const json = await res.json().catch(() => null);
-    console.log('[upstashSetOrders] success', json ? json : 'no-json');
-    return true;
-  } catch (e) {
-    console.error('Upstash SET error:', e);
-    return false;
-  }
+        const json = await res.json().catch(() => null);
+        console.log('[upstashSetOrders] success', json ? json : 'no-json');
+        return true;
+    } catch (e) {
+        console.error('Upstash SET error:', e);
+        return false;
+    }
 }
 
 // Prefer KV (Vercel KV) if configured, otherwise prefer Upstash, otherwise filesystem. On Vercel filesystem might be read-only
@@ -393,50 +394,50 @@ async function readStoredOrders() {
 }
 
 async function writeStoredOrders(list) {
-  // 1) Try Vercel KV
-  try {
-    if (kv) {
-      try {
-        await kv.set('orders', JSON.stringify(list));
-        console.log('[writeStoredOrders] wrote orders to Vercel KV');
-        return;
-      } catch (e) {
-        console.warn('[writeStoredOrders] KV write failed, falling back:', e?.message ?? e);
-      }
+    // 1) Try Vercel KV
+    try {
+        if (kv) {
+            try {
+                await kv.set('orders', JSON.stringify(list));
+                console.log('[writeStoredOrders] wrote orders to Vercel KV');
+                return;
+            } catch (e) {
+                console.warn('[writeStoredOrders] KV write failed, falling back:', e?.message ?? e);
+            }
+        }
+    } catch (e) {
+        // ignore
     }
-  } catch (e) {
-    // ignore
-  }
 
-  // 2) Try Upstash if configured
-  try {
-    if (UPSTASH_URL && UPSTASH_TOKEN) {
-      const ok = await upstashSetOrders(list);
-      if (ok) {
-        console.log('[writeStoredOrders] wrote orders to Upstash');
-        return;
-      }
-      // fallback to filesystem if Upstash fails
+    // 2) Try Upstash if configured
+    try {
+        if (UPSTASH_URL && UPSTASH_TOKEN) {
+            const ok = await upstashSetOrders(list);
+            if (ok) {
+                console.log('[writeStoredOrders] wrote orders to Upstash');
+                return;
+            }
+            // fallback to filesystem if Upstash fails
+        }
+    } catch (e) {
+        console.error('Upstash write failed, falling back to filesystem:', e);
     }
-  } catch (e) {
-    console.error('Upstash write failed, falling back to filesystem:', e);
-  }
 
-  // 3) Filesystem fallback
-  try {
-    await ensureStorage();
-    await fs.writeFile(ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
-    return;
-  } catch (e) {
-    console.warn('Write to repo path failed, attempting to write to tmp dir:', e?.message ?? e);
-  }
+    // 3) Filesystem fallback
+    try {
+        await ensureStorage();
+        await fs.writeFile(ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
+        return;
+    } catch (e) {
+        console.warn('Write to repo path failed, attempting to write to tmp dir:', e?.message ?? e);
+    }
 
-  try {
-    await fs.writeFile(TMP_ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
-    return;
-  } catch (e) {
-    console.error('Failed to write stored orders to tmp path:', e);
-  }
+    try {
+        await fs.writeFile(TMP_ORDERS_PATH, JSON.stringify(list, null, 2), 'utf-8');
+        return;
+    } catch (e) {
+        console.error('Failed to write stored orders to tmp path:', e);
+    }
 }
 
 async function updateOrderStatus(id, status) {
@@ -553,6 +554,18 @@ async function updateOrderStatus(id, status) {
     }
 }
 
+// Conservative helper to detect known upstream error objects so we avoid false-positives
+function isLikelyErrorObject(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    const st = (obj.status ?? '').toString().toLowerCase();
+    if (st === 'error') return true;
+    const text = String(obj.value ?? obj.message ?? obj.result ?? '').toLowerCase().trim();
+    if (!text) return false;
+    // Known error indicators from upstream docs / examples
+    // Matches exact token, or phrases like "activation canceled", "no activation", "token", "cancel"
+    return /(^(token)$)|\btoken\b|activation canceled|no activation|no activ|cancel(ed)?\b/.test(text);
+}
+
 // forward API requests to AnyMessage, attach token from env if not provided
 async function forward(pathname, query = {}) {
     const params = new URLSearchParams();
@@ -611,7 +624,15 @@ async function forward(pathname, query = {}) {
         // If this is getmessage and parsed indicates a success, update order status
         if (isGetMessage && forwardedId) {
             const parsedStatus = parsed && (parsed.status ?? parsed.result ?? parsed.state);
-            if (parsedStatus === 'success' || (parsed && typeof parsed === 'object' && parsed.message)) {
+            const hasMessageLike =
+                parsed &&
+                typeof parsed === 'object' &&
+                (
+                    parsed.value === 'html_response' ||
+                    ((parsed.message || parsed.result || parsed.value) && !isLikelyErrorObject(parsed))
+                );
+
+            if (parsedStatus === 'success' || hasMessageLike) {
                 try {
                     await updateOrderStatus(forwardedId, 'success');
                     console.log('[forward] updated order status ->', forwardedId, 'to success (json response)');
@@ -639,4 +660,4 @@ async function forward(pathname, query = {}) {
     }
 }
 
-export { API_BASE, TOKEN, readStoredOrders, writeStoredOrders, updateOrderStatus, forward };
+export { API_BASE, TOKEN, readStoredOrders, writeStoredOrders, updateOrderStatus, forward, isLikelyErrorObject };
