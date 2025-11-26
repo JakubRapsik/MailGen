@@ -1,5 +1,6 @@
 // javascript
-import { readStoredOrders, writeStoredOrders } from './_shared.js';
+// Import the shared utilities from the top-level api folder
+import { readStoredOrders, writeStoredOrders } from '../../api/_shared.js';
 
 export default async function handler(req, res) {
     try {
