@@ -260,3 +260,49 @@ async function writeStoredOrders(list) {
 
   return false;
 }
+
+// Add missing helpers and exports used by other API routes
+async function updateOrderStatus(id, status) {
+  try {
+    if (!id) return false;
+    const existing = await readStoredOrders();
+    const idx = existing.findIndex((it) => String(it.id) === String(id));
+    if (idx !== -1) {
+      existing[idx].status = status;
+      existing[idx].updatedAt = new Date().toISOString();
+      await writeStoredOrders(existing);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error('updateOrderStatus error:', e);
+    return false;
+  }
+}
+
+async function forward(path, query) {
+  try {
+    const url = new URL(API_BASE + path);
+    if (query && typeof query === 'object') {
+      Object.entries(query).forEach(([k, v]) => {
+        if (v != null) url.searchParams.set(k, String(v));
+      });
+    }
+    const headers = { 'Content-Type': 'application/json' };
+    if (TOKEN) headers.Authorization = `Bearer ${TOKEN}`;
+
+    const res = await fetch(url.toString(), { method: 'GET', headers });
+    const text = await res.text();
+    try {
+      const json = JSON.parse(text);
+      return { status: res.status, body: json };
+    } catch (e) {
+      return { status: res.status, body: text };
+    }
+  } catch (e) {
+    console.error('forward error:', e);
+    return { status: 500, body: { status: 'error', message: String(e) } };
+  }
+}
+
+export { forward, readStoredOrders, writeStoredOrders, updateOrderStatus, TOKEN };
