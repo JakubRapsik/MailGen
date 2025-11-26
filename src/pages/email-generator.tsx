@@ -115,21 +115,9 @@ export const EmailGenerator = () => {
                 if (cancelled) return;
                 if (res && typeof res === 'object' && res.status === 'success') {
                     setMessageStatus('received');
-                    // message received -> refresh stored orders so the status flips to success in the UI
-                    try {
-                        await fetchStoredOrders();
-                    } catch (e) {
-                        // non-fatal, ignore
-                    }
                 } else if (typeof res === 'string') {
-                    // treat raw string as received and keep the raw response for user actions
-                    setLastRawResponse(res);
+                    // treat raw string as received
                     setMessageStatus('received');
-                    try {
-                        await fetchStoredOrders();
-                    } catch (e) {
-                        // ignore
-                    }
                 }
                 // otherwise keep waiting
             } catch (e) {
