@@ -184,20 +184,41 @@ async function forward(pathname, query = {}) {
   if (!params.has('token') && TOKEN) params.set('token', TOKEN);
 
   const url = `${API_BASE}${pathname}?${params.toString()}`;
-  const res = await fetch(url);
+  const tokenPresent = params.has('token');
+  const redactedUrl = url.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
+  console.log('[forward] forwarding ->', redactedUrl, 'tokenPresent=', tokenPresent);
+
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    console.error('[forward] fetch failed for', redactedUrl, e);
+    throw e;
+  }
+
   const text = await res.text();
 
   // Detect raw HTML responses
   const looksLikeHtml = typeof text === 'string' && /<\/?html|<!doctype/i.test(text);
   const isGetMessagePreview = pathname === '/email/getmessage' && params.get('preview') === '1';
 
+  console.log('[forward] upstream status=', res.status, 'bodyLength=', typeof text === 'string' ? text.length : 0, 'looksLikeHtml=', looksLikeHtml, 'isPreview=', isGetMessagePreview);
+
+  // For explicit preview of getmessage return raw HTML/text so preview clients can render it
+  if (isGetMessagePreview) {
+    return { status: res.status, body: text };
+  }
+
   if (looksLikeHtml && !isGetMessagePreview) {
+    console.warn('[forward] detected HTML response for non-preview request, returning html_response marker');
     return { status: res.status, body: { status: 'error', value: 'html_response', length: text.length } };
   }
 
   try {
-    return { status: res.status, body: JSON.parse(text) };
+    const parsed = JSON.parse(text);
+    return { status: res.status, body: parsed };
   } catch (e) {
+    console.warn('[forward] failed to parse JSON, returning raw text body');
     return { status: res.status, body: text };
   }
 }
