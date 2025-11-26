@@ -29,34 +29,46 @@ export const EmailGenerator = () => {
         if (messageStatus !== 'waiting') return;
 
         let cancelled = false;
-        const interval = setInterval(async () => {
+        const pollOnce = async () => {
             try {
-                const res = await api.getMessage(selectedMessageId, false);
+                const res = await api.getMessage(selectedMessageId, false); // must include id and non-preview so server can update DB
                 if (cancelled) return;
 
-                if (res && typeof res === 'object' && res.status === 'success') {
-                    setMessageStatus('received');
-                    // small delay to avoid racing DB write
-                    setTimeout(() => {
-                        fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e));
-                    }, 600);
-                } else if (typeof res === 'string') {
-                    // treat raw string as received, store for preview/download and refresh orders
+                // treat raw string/HTML as received
+                if (typeof res === 'string' && res.trim().length > 0) {
                     setLastRawResponse(res);
                     setMessageStatus('received');
-                    setTimeout(() => {
-                        fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e));
-                    }, 600);
+                    setTimeout(() => fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e)), 600);
+                    return;
                 }
-                // otherwise keep waiting
-            } catch (e) {
-                // ignore polling errors
-            }
-        }, 10000);
 
+                // object responses: consider success, html_response marker or presence of message field as received
+                if (res && typeof res === 'object') {
+                    if (res.status === 'success' || res.value === 'html_response' || res.message) {
+                        setMessageStatus('received');
+                        setTimeout(() => fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e)), 600);
+                        return;
+                    }
+
+                    // if server explicitly returned an error that implies waiting, keep waiting
+                    if (res.status === 'error' && String(res.value).toLowerCase().includes('wait')) {
+                        // keep waiting
+                        return;
+                    }
+                }
+
+                // otherwise keep waiting silently
+            } catch (e) {
+                // ignore transient poll errors
+            }
+        };
+
+        // run immediately, then every 10s
+        pollOnce();
+        const id = setInterval(pollOnce, 10000);
         return () => {
             cancelled = true;
-            clearInterval(interval);
+            clearInterval(id);
         };
     }, [selectedMessageId, messageStatus]);
 
