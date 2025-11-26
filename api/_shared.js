@@ -12,6 +12,14 @@ const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const TMP_ORDERS_PATH = path.join(os.tmpdir(), 'orders.json');
 
+// compute Upstash commands endpoint robustly
+function upstashCommandsUrl() {
+  if (!UPSTASH_URL) return null;
+  // if the provided URL already contains /commands, use as-is
+  if (UPSTASH_URL.includes('/commands')) return UPSTASH_URL.replace(/\/+$/, '');
+  return UPSTASH_URL.replace(/\/+$/, '') + '/commands';
+}
+
 async function ensureStorage() {
   try {
     await fs.mkdir(STORAGE_DIR, { recursive: true });
@@ -26,9 +34,12 @@ async function ensureStorage() {
 }
 
 async function upstashGetOrders() {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  const commandsUrl = upstashCommandsUrl();
+  if (!commandsUrl || !UPSTASH_TOKEN) return null;
   try {
-    const res = await fetch(`${UPSTASH_URL}/commands`, {
+    const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
+    console.log('[upstashGetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
+    const res = await fetch(commandsUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${UPSTASH_TOKEN}`,
@@ -36,7 +47,11 @@ async function upstashGetOrders() {
       },
       body: JSON.stringify({ command: 'GET', args: ['orders'] })
     });
-    if (!res.ok) throw new Error(`Upstash GET failed: ${res.status}`);
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '<no-body>');
+      console.error(`[upstashGetOrders] Upstash responded with ${res.status}:`, bodyText);
+      throw new Error(`Upstash GET failed: ${res.status} ${bodyText}`);
+    }
     const json = await res.json();
     // json.result will be string value or null
     if (!json || json.result == null) return [];
@@ -53,10 +68,13 @@ async function upstashGetOrders() {
 }
 
 async function upstashSetOrders(list) {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) return false;
+  const commandsUrl = upstashCommandsUrl();
+  if (!commandsUrl || !UPSTASH_TOKEN) return false;
   try {
+    const redactedUrl = commandsUrl.replace(/([?&]token=)[^&]+/, '$1***REDACTED***');
+    console.log('[upstashSetOrders] calling', redactedUrl, 'tokenPresent=', !!UPSTASH_TOKEN);
     const value = JSON.stringify(list);
-    const res = await fetch(`${UPSTASH_URL}/commands`, {
+    const res = await fetch(commandsUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${UPSTASH_TOKEN}`,
@@ -64,7 +82,13 @@ async function upstashSetOrders(list) {
       },
       body: JSON.stringify({ command: 'SET', args: ['orders', value] })
     });
-    if (!res.ok) throw new Error(`Upstash SET failed: ${res.status}`);
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '<no-body>');
+      console.error(`[upstashSetOrders] Upstash responded with ${res.status}:`, bodyText);
+      throw new Error(`Upstash SET failed: ${res.status} ${bodyText}`);
+    }
+    const json = await res.json().catch(() => null);
+    console.log('[upstashSetOrders] success', json ? json : 'no-json');
     return true;
   } catch (e) {
     console.error('Upstash SET error:', e);
