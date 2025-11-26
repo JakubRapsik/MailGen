@@ -24,6 +24,42 @@ export const EmailGenerator = () => {
     // Store last raw (string) response so user can download/open it for debugging
     const [lastRawResponse, setLastRawResponse] = useState<string | null>(null);
 
+    useEffect(() => {
+        if (!selectedMessageId) return;
+        if (messageStatus !== 'waiting') return;
+
+        let cancelled = false;
+        const interval = setInterval(async () => {
+            try {
+                const res = await api.getMessage(selectedMessageId, false);
+                if (cancelled) return;
+
+                if (res && typeof res === 'object' && res.status === 'success') {
+                    setMessageStatus('received');
+                    // small delay to avoid racing DB write
+                    setTimeout(() => {
+                        fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e));
+                    }, 600);
+                } else if (typeof res === 'string') {
+                    // treat raw string as received, store for preview/download and refresh orders
+                    setLastRawResponse(res);
+                    setMessageStatus('received');
+                    setTimeout(() => {
+                        fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e));
+                    }, 600);
+                }
+                // otherwise keep waiting
+            } catch (e) {
+                // ignore polling errors
+            }
+        }, 10000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
+    }, [selectedMessageId, messageStatus]);
+
     // Lightweight toast system
     type Toast = { id: string; message: string; variant?: "info" | "success" | "error" | "warning" };
     const [toasts, setToasts] = useState<Toast[]>([]);
