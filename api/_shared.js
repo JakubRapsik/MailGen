@@ -2,6 +2,15 @@ import fs from 'fs/promises';
 import path from 'path';
 import fetch from 'node-fetch';
 import os from 'os';
+// Try to use official Upstash SDK when available for more reliable auth
+let UpstashRedis;
+try {
+  // lazy require so local dev without dependency won't crash static analysis
+  // eslint-disable-next-line import/no-extraneous-dependencies, node/no-extraneous-import
+  UpstashRedis = await import('@upstash/redis').then(m => m.Redis).catch(() => null);
+} catch (e) {
+  UpstashRedis = null;
+}
 
 const API_BASE = 'https://api.anymessage.shop';
 const TOKEN = process.env.ANYMESSAGE_TOKEN;
@@ -39,7 +48,42 @@ async function ensureStorage() {
   }
 }
 
+// helper: Upstash SDK client
+function getUpstashClient() {
+  if (!UpstashRedis || !UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  try {
+    return new UpstashRedis({ url: UPSTASH_URL, token: UPSTASH_TOKEN });
+  } catch (e) {
+    console.error('[getUpstashClient] failed to create client:', e?.message ?? e);
+    return null;
+  }
+}
+
 async function upstashGetOrders() {
+  // prefer SDK client if available
+  const sdk = getUpstashClient();
+  if (sdk) {
+    try {
+      console.log('[upstashGetOrders] using Upstash SDK client');
+      const val = await sdk.get('orders');
+      if (!val) return [];
+      // sdk may return object/value directly or JSON string
+      if (typeof val === 'string') {
+        try {
+          return JSON.parse(val);
+        } catch (e) {
+          return [];
+        }
+      }
+      // if it's object/array already
+      return Array.isArray(val) ? val : [];
+    } catch (e) {
+      console.error('[upstashGetOrders] SDK client error, falling back to HTTP:', e);
+      // fall through to HTTP fallback
+    }
+  }
+
+  // Fallback to existing HTTP logic if SDK isn't usable
   const commandsUrl = upstashCommandsUrl();
   const baseUrl = upstashBaseUrl();
   if (!commandsUrl || !UPSTASH_TOKEN) return null;
@@ -121,6 +165,20 @@ async function upstashGetOrders() {
 }
 
 async function upstashSetOrders(list) {
+  // prefer SDK client if available
+  const sdk = getUpstashClient();
+  if (sdk) {
+    try {
+      console.log('[upstashSetOrders] using Upstash SDK client');
+      await sdk.set('orders', JSON.stringify(list));
+      return true;
+    } catch (e) {
+      console.error('[upstashSetOrders] SDK client error, falling back to HTTP:', e);
+      // fallthrough to HTTP fallback
+    }
+  }
+
+  // Fallback to existing HTTP logic if SDK isn't usable
   const commandsUrl = upstashCommandsUrl();
   const baseUrl = upstashBaseUrl();
   if (!commandsUrl || !UPSTASH_TOKEN) return false;
