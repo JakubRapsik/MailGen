@@ -1,6 +1,23 @@
 // javascript
 import { forward, updateOrderStatus } from '../_shared.js';
 
+// Helper to set a header on the response in a runtime-agnostic way
+function setResHeader(res, name, value) {
+    try {
+        if (!res) return;
+        if (typeof res.set === 'function') return res.set(name, value);
+        if (typeof res.setHeader === 'function') return res.setHeader(name, value);
+        // Cloudflare/Fetch-style Response objects may expose headers as a Headers object
+        if (res.headers && typeof res.headers.set === 'function') return res.headers.set(name, value);
+        // If none of the above exist, attempt to attach a headers object (best effort)
+        if (!res.headers) res.headers = {};
+        res.headers[name] = value;
+    } catch (e) {
+        // swallow header-setting errors to avoid breaking response
+        console.warn('[setResHeader] failed to set header', name, e?.message ?? e);
+    }
+}
+
 export default async function handler(req, res) {
     try {
         const r = await forward('/email/getmessage', req.query);
@@ -25,12 +42,12 @@ export default async function handler(req, res) {
 
         // If upstream provided content-type header, forward it
         const upstreamContentType = r?.headers?.['content-type'] || r?.headers?.['Content-Type'];
-        if (upstreamContentType) res.set('Content-Type', upstreamContentType);
+        if (upstreamContentType) setResHeader(res, 'Content-Type', upstreamContentType);
 
         // For preview mode we want to return raw HTML/stream/buffer
         if (isPreview) {
             // If body is a stream, pipe it directly
-            if (r?.body && typeof r.body.pipe === 'function') {
+            if (r?.body && typeof r?.body.pipe === 'function') {
                 res.status(r.status);
                 r.body.pipe(res);
                 return;
@@ -38,7 +55,7 @@ export default async function handler(req, res) {
 
             // If body is Buffer or string, ensure appropriate content-type and send
             if (Buffer.isBuffer(r?.body) || typeof r?.body === 'string') {
-                if (!upstreamContentType && typeof r.body === 'string') res.set('Content-Type', 'text/html; charset=utf-8');
+                if (!upstreamContentType && typeof r.body === 'string') setResHeader(res, 'Content-Type', 'text/html; charset=utf-8');
                 return res.status(r.status).send(r.body);
             }
 
@@ -47,11 +64,11 @@ export default async function handler(req, res) {
         }
 
         // Non-preview: forward whatever body the upstream returned (JSON or text)
-        if (r?.body && typeof r.body.pipe === 'function') {
+        if (r?.body && typeof r?.body.pipe === 'function') {
             res.status(r.status);
             r.body.pipe(res);
         } else if (typeof r?.body === 'string' || Buffer.isBuffer(r?.body)) {
-            if (!upstreamContentType && typeof r.body === 'string') res.set('Content-Type', 'text/plain; charset=utf-8');
+            if (!upstreamContentType && typeof r.body === 'string') setResHeader(res, 'Content-Type', 'text/plain; charset=utf-8');
             res.status(r.status).send(r.body);
         } else {
             res.status(r.status).send(r.body);
