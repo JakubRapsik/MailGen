@@ -148,7 +148,7 @@ async function upstashGetOrders() {
         const urlWithToken = `${commandsUrl}?token=${encodeURIComponent(UPSTASH_TOKEN)}`;
         console.log('[upstashGetOrders] retrying with token in query param ->', urlWithToken.replace(/([?&]token=)[^&]+/, '$1***REDACTED***'));
         res = await fetch(urlWithToken, {
-          method: 'POST',
+          method: 'GET',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ command: 'GET', args: ['orders'] })
         });
@@ -290,86 +290,106 @@ async function upstashSetOrders(list) {
 
 // Prefer KV (Vercel KV) if configured, otherwise prefer Upstash, otherwise filesystem. On Vercel filesystem might be read-only
 async function readStoredOrders() {
-  // 1) Try Vercel KV
-  try {
-    if (kv) {
-      try {
-        const val = await kv.get('orders');
-        // Treat undefined/null/empty-string as no value so we can fallback to Upstash or filesystem
-        if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
-          // continue to fallbacks below
-        } else {
-          if (typeof val === 'string') {
+    // 1) Try Vercel KV
+    try {
+        if (kv) {
             try {
-              return JSON.parse(val);
+                const val = await kv.get('orders');
+                console.log('[readStoredOrders] KV value type=', Array.isArray(val) ? 'array' : typeof val, 'length=', Array.isArray(val) ? val.length : 'n/a');
+
+                // Treat undefined/null/empty-string as no value so we can fallback to Upstash or filesystem
+                if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
+                    // continue to fallbacks below
+                } else if (Array.isArray(val)) {
+                    // If KV has an empty array but Upstash is configured, prefer Upstash (avoid silent empty override)
+                    if (val.length === 0 && (UPSTASH_URL || process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL)) {
+                        console.log('[readStoredOrders] KV returned empty array and Upstash configured -> falling through to Upstash');
+                        // continue to fallbacks below
+                    } else {
+                        return val;
+                    }
+                } else if (typeof val === 'string') {
+                    try {
+                        const parsed = JSON.parse(val);
+                        if (Array.isArray(parsed)) {
+                            if (parsed.length === 0 && (UPSTASH_URL || process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL)) {
+                                console.log('[readStoredOrders] KV JSON parsed to empty array and Upstash configured -> falling through to Upstash');
+                                // continue to fallbacks
+                            } else {
+                                return parsed;
+                            }
+                        } else {
+                            return Array.isArray(parsed) ? parsed : [];
+                        }
+                    } catch (e) {
+                        console.warn('[readStoredOrders] failed to parse KV JSON, falling back to Upstash/filesystem', e?.message ?? e);
+                        // continue to fallbacks below (do not return [] here)
+                    }
+                } else {
+                    // other types (object) -> try to normalize to array
+                    return Array.isArray(val) ? val : [];
+                }
             } catch (e) {
-              console.warn('[readStoredOrders] failed to parse KV JSON, falling back to Upstash/filesystem', e?.message ?? e);
-              // continue to fallbacks below (do not return [] here)
+                console.warn('[readStoredOrders] KV read failed, falling back:', e?.message ?? e);
             }
-          }
-          return Array.isArray(val) ? val : [];
         }
-      } catch (e) {
-        console.warn('[readStoredOrders] KV read failed, falling back:', e?.message ?? e);
-      }
+    } catch (e) {
+        // ignore if kv import or runtime not available
     }
-  } catch (e) {
-    // ignore if kv import or runtime not available
-  }
 
-  // 2) Try Upstash if configured
-  try {
-    const fromUpstash = await upstashGetOrders();
-    if (fromUpstash !== null) return fromUpstash;
-  } catch (e) {
-    console.error('Upstash read failed, falling back to filesystem:', e);
-  }
+    // 2) Try Upstash if configured
+    try {
+        const fromUpstash = await upstashGetOrders();
+        if (fromUpstash !== null) return fromUpstash;
+    } catch (e) {
+        console.error('Upstash read failed, falling back to filesystem:', e);
+    }
 
-  // 3) Filesystem fallback: check tmp path first (in case writes went there), then repo path
-  try {
-    await ensureStorage();
-  } catch (e) {
-    // ignore
-  }
+    // 3) Filesystem fallback: check tmp path first (in case writes went there), then repo path
+    try {
+        await ensureStorage();
+    } catch (e) {
+        // ignore
+    }
 
-  try {
-    const rawTmp = await fs.readFile(TMP_ORDERS_PATH, 'utf-8');
-    const cleanedTmp = rawTmp.replace(/^\s*\/\/.*$/gm, '').trim();
-    const parsedTmp = JSON.parse(cleanedTmp || '[]');
-    return parsedTmp;
-  } catch (_) {
-    // ignore and try repo path
-  }
+    try {
+        const rawTmp = await fs.readFile(TMP_ORDERS_PATH, 'utf-8');
+        const cleanedTmp = rawTmp.replace(/^\s*\/\/.*$/gm, '').trim();
+        const parsedTmp = JSON.parse(cleanedTmp || '[]');
+        return parsedTmp;
+    } catch (_) {
+        // ignore and try repo path
+    }
 
-  try {
-    const raw = await fs.readFile(ORDERS_PATH, 'utf-8');
-    const cleaned = raw.replace(/^\s*\/\/.*$/gm, '').trim();
-    const list = JSON.parse(cleaned || '[]');
-    // Backfill missing status fields to 'pending'
-    let updated = false;
-    const normalized = Array.isArray(list)
-      ? list.map((it) => {
-          if (it && typeof it === 'object') {
-            if (!('status' in it)) {
-              it.status = 'pending';
-              updated = true;
+    try {
+        const raw = await fs.readFile(ORDERS_PATH, 'utf-8');
+        const cleaned = raw.replace(/^\s*\/\/.*$/gm, '').trim();
+        const list = JSON.parse(cleaned || '[]');
+        // Backfill missing status fields to 'pending'
+        let updated = false;
+        const normalized = Array.isArray(list)
+            ? list.map((it) => {
+                if (it && typeof it === 'object') {
+                    if (!('status' in it)) {
+                        it.status = 'pending';
+                        updated = true;
+                    }
+                }
+                return it;
+            })
+            : [];
+        if (updated) {
+            try {
+                await writeStoredOrders(normalized);
+            } catch (e) {
+                console.error('Failed to persist backfilled statuses:', e);
             }
-          }
-          return it;
-        })
-      : [];
-    if (updated) {
-      try {
-        await writeStoredOrders(normalized);
-      } catch (e) {
-        console.error('Failed to persist backfilled statuses:', e);
-      }
+        }
+        return normalized;
+    } catch (e) {
+        console.error('Failed to read stored orders from filesystem:', e);
+        return [];
     }
-    return normalized;
-  } catch (e) {
-    console.error('Failed to read stored orders from filesystem:', e);
-    return [];
-  }
 }
 
 async function writeStoredOrders(list) {
