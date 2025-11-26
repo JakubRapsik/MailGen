@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState , useRef } from "react";
 import { Button } from "@/components/base/buttons/button";
 import { ButtonUtility } from "@/components/base/buttons/button-utility";
 import api from "@/hooks/use-anymessage-api";
@@ -24,53 +24,60 @@ export const EmailGenerator = () => {
     // Store last raw (string) response so user can download/open it for debugging
     const [lastRawResponse, setLastRawResponse] = useState<string | null>(null);
 
+    const scanningRef = useRef(false);
+
     useEffect(() => {
-        if (!selectedMessageId) return;
-        if (messageStatus !== 'waiting') return;
+        // scan only orders that aren't already final
+        const pending = orders.filter((o) => o.status !== 'success' && o.status !== 'canceled');
+        if (pending.length === 0) return;
 
         let cancelled = false;
-        const pollOnce = async () => {
+        const scanOnce = async () => {
+            if (scanningRef.current) return; // avoid overlapping scans
+            scanningRef.current = true;
             try {
-                const res = await api.getMessage(selectedMessageId, false); // must include id and non-preview so server can update DB
-                if (cancelled) return;
+                for (const o of pending) {
+                    if (cancelled) break;
+                    try {
+                        const res = await api.getMessage(o.id, false); // non-preview so server can update DB
+                        if (!res) continue;
 
-                // treat raw string/HTML as received
-                if (typeof res === 'string' && res.trim().length > 0) {
-                    setLastRawResponse(res);
-                    setMessageStatus('received');
-                    setTimeout(() => fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e)), 600);
-                    return;
-                }
+                        const isRawString = typeof res === 'string' && res.trim().length > 0;
+                        const isObjectMsg =
+                            res && typeof res === 'object' && (
+                                res.status === 'success' ||
+                                res.value === 'html_response' ||
+                                !!res.message
+                            );
 
-                // object responses: consider success, html_response marker or presence of message field as received
-                if (res && typeof res === 'object') {
-                    if (res.status === 'success' || res.value === 'html_response' || res.message) {
-                        setMessageStatus('received');
-                        setTimeout(() => fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e)), 600);
-                        return;
+                        if (isRawString || isObjectMsg) {
+                            if (isRawString) setLastRawResponse(res);
+                            // if the user is currently viewing this id, show it immediately
+                            if (selectedMessageId === o.id) setMessageStatus('received');
+
+                            // small delay to avoid racing DB write, then refresh orders so UI sees 'success'
+                            await new Promise((r) => setTimeout(r, 600));
+                            await fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e));
+                            // continue scanning remaining orders in same pass
+                        }
+                    } catch (e) {
+                        // ignore per-order errors and continue
                     }
-
-                    // if server explicitly returned an error that implies waiting, keep waiting
-                    if (res.status === 'error' && String(res.value).toLowerCase().includes('wait')) {
-                        // keep waiting
-                        return;
-                    }
                 }
-
-                // otherwise keep waiting silently
-            } catch (e) {
-                // ignore transient poll errors
+            } finally {
+                scanningRef.current = false;
             }
         };
 
-        // run immediately, then every 10s
-        pollOnce();
-        const id = setInterval(pollOnce, 10000);
+        // run immediately then every 10s
+        scanOnce();
+        const id = setInterval(scanOnce, 10000);
         return () => {
             cancelled = true;
             clearInterval(id);
+            scanningRef.current = false;
         };
-    }, [selectedMessageId, messageStatus]);
+    }, [orders, selectedMessageId]);
 
     // Lightweight toast system
     type Toast = { id: string; message: string; variant?: "info" | "success" | "error" | "warning" };

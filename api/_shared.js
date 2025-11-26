@@ -440,48 +440,117 @@ async function writeStoredOrders(list) {
 }
 
 async function updateOrderStatus(id, status) {
-  try {
-    // Try to update in KV if possible
-    if (kv) {
-      try {
-        const val = await kv.get('orders');
-        let list = [];
-        if (val) {
-          if (typeof val === 'string') {
+    try {
+        // 1) Try Vercel KV (keep existing behavior)
+        if (kv) {
             try {
-              list = JSON.parse(val);
+                const val = await kv.get('orders');
+                let list = [];
+                if (val) {
+                    if (typeof val === 'string') {
+                        try {
+                            list = JSON.parse(val);
+                        } catch (e) {
+                            list = [];
+                        }
+                    } else if (Array.isArray(val)) {
+                        list = val;
+                    }
+                }
+                const idx = list.findIndex((it) => String(it.id) === String(id));
+                if (idx !== -1) {
+                    list[idx].status = status;
+                    list[idx].updatedAt = new Date().toISOString();
+                    await kv.set('orders', JSON.stringify(list));
+                    console.log('[updateOrderStatus] updated order in KV', id, status);
+                    // still attempt to update Upstash too if configured so external store stays in sync
+                    if (UPSTASH_URL && UPSTASH_TOKEN) {
+                        try {
+                            const upstashList = await upstashGetOrders();
+                            if (Array.isArray(upstashList)) {
+                                const ui = upstashList.findIndex((it) => String(it.id) === String(id));
+                                if (ui !== -1) {
+                                    upstashList[ui].status = status;
+                                    upstashList[ui].updatedAt = new Date().toISOString();
+                                    const ok = await upstashSetOrders(upstashList);
+                                    if (ok) console.log('[updateOrderStatus] also updated order in Upstash', id, status);
+                                } else {
+                                    // id not present in Upstash: try to merge by writing the KV list to Upstash
+                                    const ok = await upstashSetOrders(list);
+                                    if (ok) console.log('[updateOrderStatus] synced KV -> Upstash', id, status);
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('[updateOrderStatus] Upstash sync after KV update failed:', e?.message ?? e);
+                        }
+                    }
+                    return;
+                }
+                // if not found in KV, continue to update other stores
             } catch (e) {
-              list = [];
+                console.warn('[updateOrderStatus] KV update failed, falling back:', e?.message ?? e);
             }
-          } else if (Array.isArray(val)) {
-            list = val;
-          }
         }
-        const idx = list.findIndex((it) => String(it.id) === String(id));
-        if (idx !== -1) {
-          list[idx].status = status;
-          list[idx].updatedAt = new Date().toISOString();
-          await kv.set('orders', JSON.stringify(list));
-          console.log('[updateOrderStatus] updated order in KV', id, status);
-          return;
-        }
-        // if not found in KV, fall through to read/mutate other stores
-      } catch (e) {
-        console.warn('[updateOrderStatus] KV update failed, falling back:', e?.message ?? e);
-      }
-    }
 
-    // Fallback: read from preferred storage chain and write back
-    const existing = await readStoredOrders();
-    const idx = existing.findIndex((it) => String(it.id) === String(id));
-    if (idx !== -1) {
-      existing[idx].status = status;
-      existing[idx].updatedAt = new Date().toISOString();
-      await writeStoredOrders(existing);
+        // 2) If Upstash configured, update it directly (preferred for external DB-only setups)
+        if (UPSTASH_URL && UPSTASH_TOKEN) {
+            try {
+                const upstashList = await upstashGetOrders();
+                if (Array.isArray(upstashList)) {
+                    const idx = upstashList.findIndex((it) => String(it.id) === String(id));
+                    if (idx !== -1) {
+                        upstashList[idx].status = status;
+                        upstashList[idx].updatedAt = new Date().toISOString();
+                        const ok = await upstashSetOrders(upstashList);
+                        if (ok) {
+                            console.log('[updateOrderStatus] updated order in Upstash', id, status);
+                            return;
+                        } else {
+                            console.warn('[updateOrderStatus] upstashSetOrders returned false');
+                        }
+                    } else {
+                        // If order missing in Upstash, merge by reading preferred storage and writing combined list
+                        const existing = await readStoredOrders();
+                        const merged = Array.isArray(existing) ? existing.slice() : [];
+                        const found = merged.findIndex((it) => String(it.id) === String(id));
+                        if (found !== -1) {
+                            merged[found].status = status;
+                            merged[found].updatedAt = new Date().toISOString();
+                        } else {
+                            // not present anywhere -> append minimal entry
+                            merged.push({ id: String(id), status, updatedAt: new Date().toISOString() });
+                        }
+                        const ok2 = await upstashSetOrders(merged);
+                        if (ok2) {
+                            console.log('[updateOrderStatus] merged and wrote orders to Upstash', id, status);
+                            return;
+                        }
+                    }
+                } else {
+                    console.warn('[updateOrderStatus] upstashGetOrders returned null/non-array, falling back');
+                }
+            } catch (e) {
+                console.error('[updateOrderStatus] Upstash update failed, falling back:', e);
+            }
+        }
+
+        // 3) Fallback: read from preferred storage chain and write back (filesystem or other)
+        const existing = await readStoredOrders();
+        const idx = existing.findIndex((it) => String(it.id) === String(id));
+        if (idx !== -1) {
+            existing[idx].status = status;
+            existing[idx].updatedAt = new Date().toISOString();
+            await writeStoredOrders(existing);
+            console.log('[updateOrderStatus] updated order in fallback storage', id, status);
+        } else {
+            // If not found anywhere, append minimal record to fallback store
+            existing.push({ id: String(id), status, updatedAt: new Date().toISOString() });
+            await writeStoredOrders(existing);
+            console.log('[updateOrderStatus] appended new order record in fallback storage', id, status);
+        }
+    } catch (e) {
+        console.error('Failed to update order status:', e);
     }
-  } catch (e) {
-    console.error('Failed to update order status:', e);
-  }
 }
 
 // forward API requests to AnyMessage, attach token from env if not provided
