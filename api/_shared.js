@@ -6,6 +6,15 @@ import os from 'os';
 const API_BASE = 'https://api.anymessage.shop';
 const TOKEN = process.env.ANYMESSAGE_TOKEN;
 
+// Safe token presence logging (do NOT print the token itself)
+try {
+  const tokenPresent = !!TOKEN;
+  const len = TOKEN ? TOKEN.length : 0;
+  console.log(`[_shared] ANYMESSAGE_TOKEN present? ${tokenPresent}${tokenPresent ? ` (len=${len})` : ''}`);
+} catch (e) {
+  console.warn('[_shared] failed to log token presence safely', e);
+}
+
 const STORAGE_DIR = path.join(process.cwd(), 'server_data');
 const ORDERS_PATH = path.join(STORAGE_DIR, 'orders.json');
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
