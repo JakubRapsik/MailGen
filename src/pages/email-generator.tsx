@@ -21,6 +21,52 @@ export const EmailGenerator = () => {
 
     const scanningRef = useRef(false);
 
+    // --- rate limiter for api.getMessage ---
+    // Ensures at most one api.getMessage call every RATE_LIMIT_MS milliseconds.
+    const RATE_LIMIT_MS = 5000; // 5 seconds
+    const lastCallRef = useRef<number>(0);
+    const queueRef = useRef<Array<{ id: string; preview: boolean; resolve: (v: any) => void; reject: (e: any) => void }>>([]);
+    const pendingTimerRef = useRef<number | null>(null);
+
+    const scheduleProcess = () => {
+        if (pendingTimerRef.current != null) return;
+        const now = Date.now();
+        const elapsed = now - (lastCallRef.current || 0);
+        const delay = Math.max(0, RATE_LIMIT_MS - elapsed);
+        pendingTimerRef.current = window.setTimeout(async () => {
+            pendingTimerRef.current = null;
+            const item = queueRef.current.shift();
+            if (!item) return;
+            lastCallRef.current = Date.now();
+            try {
+                const res = await api.getMessage(item.id, item.preview);
+                item.resolve(res);
+            } catch (e) {
+                item.reject(e);
+            } finally {
+                if (queueRef.current.length > 0) scheduleProcess();
+            }
+        }, delay);
+    };
+
+    const getMessageRateLimited = (id: string, preview = false): Promise<any> => {
+        return new Promise((resolve, reject) => {
+            const now = Date.now();
+            if (!lastCallRef.current || now - lastCallRef.current >= RATE_LIMIT_MS) {
+                // call immediately
+                lastCallRef.current = now;
+                api.getMessage(id, preview).then(resolve).catch(reject).finally(() => {
+                    if (queueRef.current.length > 0) scheduleProcess();
+                });
+            } else {
+                // enqueue and schedule
+                queueRef.current.push({ id, preview, resolve, reject });
+                scheduleProcess();
+            }
+        });
+    };
+    // --- end rate limiter ---
+
     useEffect(() => {
         const pending = orders.filter((o) => o.status !== 'success' && o.status !== 'canceled');
         if (pending.length === 0) return;
@@ -33,7 +79,8 @@ export const EmailGenerator = () => {
                 for (const o of pending) {
                     if (cancelled) break;
                     try {
-                        const res = await api.getMessage(o.id, false);
+                        // use rate-limited getMessage to avoid bursts
+                        const res = await getMessageRateLimited(o.id, false);
                         if (!res) continue;
 
                         const isRawString = typeof res === 'string' && res.trim().length > 0;
@@ -151,7 +198,7 @@ export const EmailGenerator = () => {
         let cancelled = false;
         const interval = setInterval(async () => {
             try {
-                const res = await api.getMessage(selectedMessageId, false);
+                const res = await getMessageRateLimited(selectedMessageId, false);
                 if (cancelled) return;
                 if (res && typeof res === 'object' && res.status === 'success') {
                     setMessageStatus('received');
@@ -212,7 +259,7 @@ export const EmailGenerator = () => {
         setMessageStatus("none");
         setSelectedMessageId(id);
         try {
-            const res: any = await api.getMessage(id, false);
+            const res: any = await getMessageRateLimited(id, false);
 
             if (res == null) {
                 setMessageStatus("error");
