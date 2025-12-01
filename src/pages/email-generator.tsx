@@ -263,7 +263,7 @@ export const EmailGenerator = () => {
 
         fetchStoredOrdersRateLimited();
 
-        const intervalMs = 10000;
+        const intervalMs = 15000;
         const id = setInterval(() => {
             fetchStoredOrdersRateLimited().catch((e) => console.warn('Failed to refresh orders via poll:', e));
         }, intervalMs);
