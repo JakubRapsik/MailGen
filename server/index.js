@@ -93,22 +93,66 @@ app.get("/api/email/order", async (req, res) => {
     }
 });
 
+// Server-side safeguards for getmessage: per-id in-flight dedupe and short cooldown cache
+const SERVER_MSG_RATE_LIMIT_MS = parseInt(process.env.SERVER_MSG_RATE_LIMIT_MS || '5000', 10); // default 5s
+const msgInFlight = new Map(); // key -> Promise resolving to { status, body }
+const msgCache = new Map(); // key -> { ts, status, body }
+
 app.get("/api/email/getmessage", async (req, res) => {
     try {
-        const r = await forward("/email/getmessage", req.query);
-        // If preview=1, AnyMessage returns raw HTML; we want to forward it as-is.
         const isPreview = req.query.preview === "1";
-        // If this is not a preview and the response indicates a received message, mark order as success
+        const id = String(req.query.id ?? '');
+        const key = `${id}:${isPreview ? 1 : 0}`;
+
+        // If there's an in-flight request for this id+preview, wait for it and return its result
+        if (msgInFlight.has(key)) {
+            try {
+                const r = await msgInFlight.get(key);
+                // r is { status, body }
+                if (isPreview && typeof r.body === "string") res.set("Content-Type", "text/html");
+                return res.status(r.status).send(r.body);
+            } catch (e) {
+                // fall-through to attempt a fresh fetch
+            }
+        }
+
+        // If we have a recent cached response within cooldown, return it immediately
+        const cached = msgCache.get(key);
+        if (cached && (Date.now() - cached.ts) < SERVER_MSG_RATE_LIMIT_MS) {
+            if (isPreview && typeof cached.body === "string") res.set("Content-Type", "text/html");
+            // Helpful debug log
+            console.log(`[getmessage] returning cached response for ${key}`);
+            return res.status(cached.status).send(cached.body);
+        }
+
+        // Start a new fetch and store promise in in-flight map
+        const p = (async () => {
+            const r = await forward("/email/getmessage", req.query);
+            // store in cache for cooldown window
+            try {
+                msgCache.set(key, { ts: Date.now(), status: r.status, body: r.body });
+            } catch (e) {
+                console.warn('Failed to set msgCache', e);
+            }
+            return r;
+        })();
+
+        msgInFlight.set(key, p);
+        let r;
         try {
-            const messageId = req.query.id;
+            r = await p;
+        } finally {
+            msgInFlight.delete(key);
+        }
+
+        // If not preview and message indicates success, update stored order status
+        try {
             if (!isPreview) {
-                // r.body could be an object with { status: 'success', ... } when a message arrived
                 if (r && r.body && typeof r.body === 'object' && r.body.status === 'success') {
-                    await updateOrderStatus(messageId, 'success');
+                    await updateOrderStatus(id, 'success');
                 }
-                // also, if upstream returned a raw string (rare since forward masks HTML), treat it as message received
                 if (r && typeof r.body === 'string') {
-                    await updateOrderStatus(messageId, 'success');
+                    await updateOrderStatus(id, 'success');
                 }
             }
         } catch (e) {
@@ -116,12 +160,11 @@ app.get("/api/email/getmessage", async (req, res) => {
         }
 
         if (isPreview) {
-            // r.body may be a string
             if (typeof r.body === "string") res.set("Content-Type", "text/html");
-            res.status(r.status).send(r.body);
-        } else {
-            res.status(r.status).send(r.body);
+            return res.status(r.status).send(r.body);
         }
+
+        return res.status(r.status).send(r.body);
     } catch (e) {
         res.status(500).send({ status: "error", message: String(e) });
     }
@@ -214,8 +257,12 @@ async function pollPendingOrdersOnce() {
         if (!pending.length) return;
         console.log(`Polling ${pending.length} pending orders for messages...`);
 
+        // Only process a limited batch per run to avoid hammering upstream
+        const BATCH_SIZE = parseInt(process.env.POLL_BATCH_SIZE || '3', 10);
+        const toCheck = pending.slice(0, BATCH_SIZE);
+
         // Check sequentially to avoid hammering upstream
-        for (const order of pending) {
+        for (const order of toCheck) {
             try {
                 // call getmessage for this id (no preview)
                 const r = await forward('/email/getmessage', { id: order.id });
@@ -233,6 +280,8 @@ async function pollPendingOrdersOnce() {
                 console.warn(`Polling failed for order ${order.id}:`, e?.message ?? e);
                 // continue with next
             }
+            // small delay between calls to be extra-safe (milliseconds)
+            await new Promise((r) => setTimeout(r, parseInt(process.env.POLL_DELAY_MS || '500', 10)));
         }
     } catch (e) {
         console.error('Error while polling pending orders:', e);
@@ -242,6 +291,12 @@ async function pollPendingOrdersOnce() {
 }
 
 function startPollingPendingOrders() {
+    // only start poller when explicitly enabled (avoid background timers on Vercel serverless)
+    if (process.env.ENABLE_POLLER?.toLowerCase() !== 'true') {
+        console.log('Pending-orders poller is disabled (ENABLE_POLLER != true).');
+        return;
+    }
+
     const interval = parseInt(process.env.POLL_INTERVAL_MS || '5000', 10);
     // Run immediately and then at interval
     pollPendingOrdersOnce().catch((e) => console.error(e));
@@ -251,7 +306,7 @@ function startPollingPendingOrders() {
 
 app.listen(PORT, () => {
     console.log(`AnyMessage proxy listening on http://localhost:${PORT}`);
-    // start background poller in development / local environments
+    // start background poller in development / local environments only when explicitly enabled
     if (process.env.NODE_ENV !== 'test') {
         startPollingPendingOrders();
     }
