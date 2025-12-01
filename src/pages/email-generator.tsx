@@ -72,11 +72,13 @@ export const EmailGenerator = () => {
         if (pending.length === 0) return;
 
         let cancelled = false;
+        const BATCH_SIZE = 3; // scan only this many pending orders per run to avoid huge queues
         const scanOnce = async () => {
             if (scanningRef.current) return;
             scanningRef.current = true;
             try {
-                for (const o of pending) {
+                const toCheck = pending.slice(0, BATCH_SIZE);
+                for (const o of toCheck) {
                     if (cancelled) break;
                     try {
                         // use rate-limited getMessage to avoid bursts
