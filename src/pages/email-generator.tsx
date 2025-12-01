@@ -151,7 +151,7 @@ export const EmailGenerator = () => {
                             }
 
                             await new Promise((r) => setTimeout(r, 600));
-                            await fetchStoredOrders().catch((e) => console.warn('refresh orders failed:', e));
+                            await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
                         }
                     } catch (e) {
                         // ignore per-order errors
@@ -209,6 +209,36 @@ export const EmailGenerator = () => {
         }
     };
 
+    // Rate-limited wrapper: fetch stored orders at most once every FETCH_STORED_ORDERS_MIN_MS
+    const FETCH_STORED_ORDERS_MIN_MS = 3000; // 3 seconds
+    const lastFetchOrdersRef = useRef<number>(0);
+    const pendingFetchOrdersTimerRef = useRef<number | null>(null);
+
+    const fetchStoredOrdersRateLimited = async (): Promise<void | null> => {
+        const now = Date.now();
+        const elapsed = now - (lastFetchOrdersRef.current || 0);
+        if (!lastFetchOrdersRef.current || elapsed >= FETCH_STORED_ORDERS_MIN_MS) {
+            // call immediately
+            lastFetchOrdersRef.current = Date.now();
+            if (pendingFetchOrdersTimerRef.current) {
+                clearTimeout(pendingFetchOrdersTimerRef.current);
+                pendingFetchOrdersTimerRef.current = null;
+            }
+            return fetchStoredOrders();
+        }
+
+        // schedule a single delayed fetch if not already scheduled
+        if (pendingFetchOrdersTimerRef.current == null) {
+            const delay = Math.max(0, FETCH_STORED_ORDERS_MIN_MS - elapsed);
+            pendingFetchOrdersTimerRef.current = window.setTimeout(() => {
+                pendingFetchOrdersTimerRef.current = null;
+                lastFetchOrdersRef.current = Date.now();
+                fetchStoredOrders().catch((e) => console.warn('refresh orders failed (deferred):', e));
+            }, delay);
+        }
+        return Promise.resolve(null);
+    };
+
     useEffect(() => {
         setError(null);
         setUserError(false);
@@ -231,11 +261,11 @@ export const EmailGenerator = () => {
             }
         })();
 
-        fetchStoredOrders();
+        fetchStoredOrdersRateLimited();
 
         const intervalMs = 10000;
         const id = setInterval(() => {
-            fetchStoredOrders().catch((e) => console.warn('Failed to refresh orders via poll:', e));
+            fetchStoredOrdersRateLimited().catch((e) => console.warn('Failed to refresh orders via poll:', e));
         }, intervalMs);
         return () => clearInterval(id);
     }, []);
@@ -290,10 +320,10 @@ export const EmailGenerator = () => {
                     setUserError(true);
                 }
             }
-            await fetchStoredOrders();
+            await fetchStoredOrdersRateLimited();
             setStatusMsg(`Ordered ${succeeded} of ${times}`);
             setTimeout(() => setStatusMsg(null), 4000);
-        } catch (e: any) {
+         } catch (e: any) {
             setError(String(e?.message ?? e));
             setUserError(true);
         } finally {
@@ -322,7 +352,7 @@ export const EmailGenerator = () => {
                 } catch (e) {
                     console.warn('[handleGetMessage] mark-success failed for', id, e);
                 }
-                await fetchStoredOrders();
+                await fetchStoredOrdersRateLimited();
             } else if (res?.status === "error") {
                 if (String(res.value).toLowerCase().includes("wait")) {
                     setMessageStatus("waiting");
@@ -338,7 +368,7 @@ export const EmailGenerator = () => {
                 } catch (e) {
                     console.warn('[handleGetMessage] mark-success failed for', id, e);
                 }
-                await fetchStoredOrders();
+                await fetchStoredOrdersRateLimited();
             } else {
                 setMessageStatus("error");
                 setError(JSON.stringify(res));
@@ -393,7 +423,7 @@ export const EmailGenerator = () => {
         try {
             const res = await api.cancelEmail(id);
             if (res?.status === "success") {
-                await fetchStoredOrders();
+                await fetchStoredOrdersRateLimited();
                 setStatusMsg(`Cancelled ${id}`);
                 setTimeout(() => setStatusMsg(null), 3000);
             } else {
@@ -472,7 +502,7 @@ export const EmailGenerator = () => {
 
                 <div className="ml-auto flex items-center gap-2">
                     <div className="text-sm">Balance: {loading ? "..." : balance ?? "-"}</div>
-                    <ButtonUtility onClick={() => fetchStoredOrders()} size="sm" color="secondary">Refresh Orders</ButtonUtility>
+                    <ButtonUtility onClick={() => fetchStoredOrdersRateLimited()} size="sm" color="secondary">Refresh Orders</ButtonUtility>
                 </div>
             </div>
 
