@@ -25,50 +25,97 @@ export const EmailGenerator = () => {
     // Ensures at most one api.getMessage call every RATE_LIMIT_MS milliseconds.
     const RATE_LIMIT_MS = 5000; // 5 seconds
     const lastCallRef = useRef<number>(0);
-    const queueRef = useRef<Array<{ id: string; preview: boolean; resolve: (v: any) => void; reject: (e: any) => void }>>([]);
+    // queue holds keys: `${id}:${preview ? 1 : 0}`
+    const queueRef = useRef<string[]>([]);
+    const queuedMapRef = useRef<Map<string, Array<{ resolve: (v: any) => void; reject: (e: any) => void }>>>(new Map());
     const pendingTimerRef = useRef<number | null>(null);
+    const inFlightRef = useRef<Map<string, Promise<any>>>(new Map());
 
-    const scheduleProcess = () => {
+    const makeKey = (id: string, preview: boolean) => `${id}:${preview ? 1 : 0}`;
+    const parseKey = (key: string) => {
+        const idx = key.lastIndexOf(":");
+        const id = key.slice(0, idx);
+        const preview = key.slice(idx + 1) === '1';
+        return { id, preview };
+    };
+    const QUEUE_MAX = 100; // safety cap for queued distinct ids
+
+     const scheduleProcess = () => {
         if (pendingTimerRef.current != null) return;
         const now = Date.now();
         const elapsed = now - (lastCallRef.current || 0);
         const delay = Math.max(0, RATE_LIMIT_MS - elapsed);
         pendingTimerRef.current = window.setTimeout(async () => {
             pendingTimerRef.current = null;
-            const item = queueRef.current.shift();
-            if (!item) return;
+            const key = queueRef.current.shift();
+            if (!key) return;
+            const listeners = queuedMapRef.current.get(key) ?? [];
+            // remove from queuedMap so further enqueues create new entry
+            queuedMapRef.current.delete(key);
             lastCallRef.current = Date.now();
+            const { id, preview } = parseKey(key);
+            let promise: Promise<any>;
             try {
-                const res = await api.getMessage(item.id, item.preview);
-                item.resolve(res);
+                // If another caller already started an in-flight fetch for this key, use it
+                if (inFlightRef.current.has(key)) {
+                    promise = inFlightRef.current.get(key)!;
+                } else {
+                    promise = api.getMessage(id, preview);
+                    inFlightRef.current.set(key, promise);
+                }
+                const res = await promise;
+                // resolve all listeners
+                for (const l of listeners) l.resolve(res);
             } catch (e) {
-                item.reject(e);
+                for (const l of listeners) l.reject(e);
             } finally {
+                inFlightRef.current.delete(key);
                 if (queueRef.current.length > 0) scheduleProcess();
             }
         }, delay);
     };
 
     const getMessageRateLimited = (id: string, preview = false): Promise<any> => {
+         const key = makeKey(id, preview);
+
+         // If already in flight, return existing promise
+         const inFlight = inFlightRef.current.get(key);
+         if (inFlight) return inFlight;
+
+         const now = Date.now();
+         if (!lastCallRef.current || now - lastCallRef.current >= RATE_LIMIT_MS) {
+             // call immediately and store in-flight so duplicates coalesce
+             const p = api.getMessage(id, preview).finally(() => {
+                 // nothing here; scheduleProcess / callers will handle deletion
+             });
+             inFlightRef.current.set(key, p);
+             // ensure after completion we delete the inFlight entry
+             p.then(() => inFlightRef.current.delete(key)).catch(() => inFlightRef.current.delete(key));
+             return p;
+         }
+
+         // otherwise enqueue and coalesce duplicates by key
+        // If queue is already large, avoid adding new distinct ids — return a quick "wait" response
+        if (queueRef.current.length >= QUEUE_MAX && !queuedMapRef.current.has(key)) {
+            return Promise.resolve({ status: 'error', value: 'wait message' });
+        }
+
         return new Promise((resolve, reject) => {
-            const now = Date.now();
-            if (!lastCallRef.current || now - lastCallRef.current >= RATE_LIMIT_MS) {
-                // call immediately
-                lastCallRef.current = now;
-                api.getMessage(id, preview).then(resolve).catch(reject).finally(() => {
-                    if (queueRef.current.length > 0) scheduleProcess();
-                });
-            } else {
-                // enqueue and schedule
-                queueRef.current.push({ id, preview, resolve, reject });
-                scheduleProcess();
-            }
-        });
-    };
-    // --- end rate limiter ---
+             const existing = queuedMapRef.current.get(key);
+             if (existing) {
+                 existing.push({ resolve, reject });
+             } else {
+                 queuedMapRef.current.set(key, [{ resolve, reject }]);
+                 queueRef.current.push(key);
+                 scheduleProcess();
+             }
+         });
+     };
+     // --- end rate limiter ---
 
     useEffect(() => {
-        const pending = orders.filter((o) => o.status !== 'success' && o.status !== 'canceled');
+        // Only consider orders that are explicitly pending
+        const pending = orders.filter((o) => o.status === 'pending');
         if (pending.length === 0) return;
 
         let cancelled = false;
