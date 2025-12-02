@@ -383,38 +383,68 @@ export const EmailGenerator = () => {
         }
     };
 
-    const openPreviewHtml = async (id: string) => {
-        try {
-            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); return; }
-            const text = await res.text();
-            const blob = new Blob([text], { type: "text/html" });
-            const url = URL.createObjectURL(blob);
-            window.open(url, "_blank");
-        } catch (e: any) {
-            setError(String(e?.message ?? e));
-            setUserError(true);
-        }
-    };
+    // New helper: poll for message a few times immediately after reorder. Returns true if message found and handled.
+    const pollForMessage = async (id: string, attempts = 6, intervalMs = 3000): Promise<boolean> => {
+        // mark the message as selected so UI reflects which id we're waiting for
+        setSelectedMessageId(id);
+        for (let i = 0; i < attempts; i++) {
+            try {
+                const url = `/api/email/getmessage?id=${encodeURIComponent(id)}`;
+                const res = await fetch(url);
+                if (!res.ok) {
+                    // non-200 — treat like not ready and retry
+                    console.warn('[pollForMessage] non-200', res.status);
+                } else {
+                    const text = await res.text();
+                    // try parse JSON first
+                    let parsed: any = null;
+                    try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
 
-    const downloadPreviewHtml = async (id: string) => {
-        try {
-            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); return; }
-            const text = await res.text();
-            const blob = new Blob([text], { type: "text/html" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `message-${id}.html`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-        } catch (e: any) {
-            setError(String(e?.message ?? e));
-            setUserError(true);
+                    // raw HTML / string response
+                    if (parsed == null && text.trim().length > 0) {
+                        setLastRawResponse(text);
+                        setMessageStatus('received');
+                        try {
+                            await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' });
+                        } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
+                        await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
+                        return true;
+                    }
+
+                    // parsed JSON
+                    if (parsed && typeof parsed === 'object') {
+                        if (parsed.status === 'success' || parsed.value === 'html_response' || parsed.message) {
+                            setMessageStatus('received');
+                            // If response contains the message body inside parsed.message or parsed.data, store raw if present
+                            if (typeof parsed.message === 'string') setLastRawResponse(parsed.message);
+                            try {
+                                await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' });
+                            } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
+                            await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
+                            return true;
+                        }
+
+                        if (parsed.status === 'error') {
+                            const val = String(parsed.value ?? parsed.error ?? '').toLowerCase();
+                            if (val.includes('wait') || val.includes('not ready')) {
+                                // message not ready yet — continue polling
+                            } else {
+                                showToast(`Reorder fetch failed: ${String(parsed.value ?? parsed.error ?? JSON.stringify(parsed))}`, 'error');
+                                setError(JSON.stringify(parsed));
+                                setUserError(true);
+                                return false;
+                            }
+                        }
+                    }
+                }
+            } catch (e: any) {
+                console.warn('[pollForMessage] attempt failed for', id, e);
+            }
+
+            // delay before next attempt
+            await new Promise((r) => setTimeout(r, intervalMs));
         }
+        return false;
     };
 
     // New: reorder handler - calls API (by id or by email+site), refreshes orders and attempts to fetch the new message
@@ -445,10 +475,15 @@ export const EmailGenerator = () => {
                 showToast(`Reorder successful${res.id ? ' — id: ' + res.id : ''}`, 'success');
                 // refresh orders list (rate-limited helper)
                 await fetchStoredOrdersRateLimited();
-                // if server returned a new id for the activation, fetch its message
+                // if server returned a new id for the activation, try to poll for its message immediately
                 if (res.id) {
-                    // call existing handler to fetch and display the message
-                    await handleGetMessage(String(res.id));
+                    const found = await pollForMessage(String(res.id));
+                    if (!found) {
+                        // not found during quick polling — set waiting state so the background poller continues
+                        setSelectedMessageId(String(res.id));
+                        setMessageStatus('waiting');
+                        showToast('Message not received yet — continuing to poll in background', 'info');
+                    }
                 }
             } else if (res?.status === 'error') {
                 const val = String(res.value ?? res.error ?? JSON.stringify(res));
@@ -488,6 +523,43 @@ export const EmailGenerator = () => {
             setLoading(false);
         }
     };
+
+    // Helpers: open or download preview HTML (preview=1)
+    async function openPreviewHtml(id?: string | null) {
+        if (!id) return;
+        try {
+            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
+            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); setUserError(true); return; }
+            const text = await res.text();
+            const blob = new Blob([text], { type: "text/html" });
+            const url = URL.createObjectURL(blob);
+            window.open(url, "_blank");
+        } catch (e: any) {
+            setError(String(e?.message ?? e));
+            setUserError(true);
+        }
+    }
+
+    async function downloadPreviewHtml(id?: string | null) {
+        if (!id) return;
+        try {
+            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
+            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); setUserError(true); return; }
+            const text = await res.text();
+            const blob = new Blob([text], { type: "text/html" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `message-${id}.html`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e: any) {
+            setError(String(e?.message ?? e));
+            setUserError(true);
+        }
+    }
 
     const downloadLastResponse = () => {
         if (!lastRawResponse) return;
