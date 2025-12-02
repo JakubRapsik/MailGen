@@ -18,7 +18,6 @@ export const EmailGenerator = () => {
     const [userError, setUserError] = useState<boolean>(false);
     const [statusMsg, setStatusMsg] = useState<string | null>(null);
     const [lastRawResponse, setLastRawResponse] = useState<string | null>(null);
-    const [lastReorder, setLastReorder] = useState<any | null>(null);
 
     const scanningRef = useRef(false);
 
@@ -41,7 +40,7 @@ export const EmailGenerator = () => {
     };
     const QUEUE_MAX = 100; // safety cap for queued distinct ids
 
-     const scheduleProcess = () => {
+    const scheduleProcess = () => {
         if (pendingTimerRef.current != null) return;
         const now = Date.now();
         const elapsed = now - (lastCallRef.current || 0);
@@ -77,42 +76,42 @@ export const EmailGenerator = () => {
     };
 
     const getMessageRateLimited = (id: string, preview = false): Promise<any> => {
-         const key = makeKey(id, preview);
+        const key = makeKey(id, preview);
 
-         // If already in flight, return existing promise
-         const inFlight = inFlightRef.current.get(key);
-         if (inFlight) return inFlight;
+        // If already in flight, return existing promise
+        const inFlight = inFlightRef.current.get(key);
+        if (inFlight) return inFlight;
 
-         const now = Date.now();
-         if (!lastCallRef.current || now - lastCallRef.current >= RATE_LIMIT_MS) {
-             // call immediately and store in-flight so duplicates coalesce
-             const p = api.getMessage(id, preview).finally(() => {
-                 // nothing here; scheduleProcess / callers will handle deletion
-             });
-             inFlightRef.current.set(key, p);
-             // ensure after completion we delete the inFlight entry
-             p.then(() => inFlightRef.current.delete(key)).catch(() => inFlightRef.current.delete(key));
-             return p;
-         }
+        const now = Date.now();
+        if (!lastCallRef.current || now - lastCallRef.current >= RATE_LIMIT_MS) {
+            // call immediately and store in-flight so duplicates coalesce
+            const p = api.getMessage(id, preview).finally(() => {
+                // nothing here; scheduleProcess / callers will handle deletion
+            });
+            inFlightRef.current.set(key, p);
+            // ensure after completion we delete the inFlight entry
+            p.then(() => inFlightRef.current.delete(key)).catch(() => inFlightRef.current.delete(key));
+            return p;
+        }
 
-         // otherwise enqueue and coalesce duplicates by key
+        // otherwise enqueue and coalesce duplicates by key
         // If queue is already large, avoid adding new distinct ids — return a quick "wait" response
         if (queueRef.current.length >= QUEUE_MAX && !queuedMapRef.current.has(key)) {
             return Promise.resolve({ status: 'error', value: 'wait message' });
         }
 
         return new Promise((resolve, reject) => {
-             const existing = queuedMapRef.current.get(key);
-             if (existing) {
-                 existing.push({ resolve, reject });
-             } else {
-                 queuedMapRef.current.set(key, [{ resolve, reject }]);
-                 queueRef.current.push(key);
-                 scheduleProcess();
-             }
-         });
-     };
-     // --- end rate limiter ---
+            const existing = queuedMapRef.current.get(key);
+            if (existing) {
+                existing.push({ resolve, reject });
+            } else {
+                queuedMapRef.current.set(key, [{ resolve, reject }]);
+                queueRef.current.push(key);
+                scheduleProcess();
+            }
+        });
+    };
+    // --- end rate limiter ---
 
     useEffect(() => {
         // Only consider orders that are explicitly pending
@@ -324,7 +323,7 @@ export const EmailGenerator = () => {
             await fetchStoredOrdersRateLimited();
             setStatusMsg(`Ordered ${succeeded} of ${times}`);
             setTimeout(() => setStatusMsg(null), 4000);
-         } catch (e: any) {
+        } catch (e: any) {
             setError(String(e?.message ?? e));
             setUserError(true);
         } finally {
@@ -356,12 +355,7 @@ export const EmailGenerator = () => {
                 await fetchStoredOrdersRateLimited();
             } else if (res?.status === "error") {
                 if (String(res.value).toLowerCase().includes("wait")) {
-                    // try short immediate polling before falling back to background waiting
-                    const found = await pollForMessage(id);
-                    if (!found) {
-                        setMessageStatus("waiting");
-                        showToast('Message not received yet — continuing to poll in background', 'info');
-                    }
+                    setMessageStatus("waiting");
                 } else {
                     setMessageStatus("error");
                     setError(JSON.stringify(res));
@@ -389,152 +383,37 @@ export const EmailGenerator = () => {
         }
     };
 
-    // Poll for a message. If preview=true, returns the HTML string when found; otherwise returns true/false.
-    const pollForMessage = async (id: string, attempts = 6, intervalMs = 3000, preview = false): Promise<string | boolean> => {
-        // mark the message as selected so UI reflects which id we're waiting for
-        setSelectedMessageId(id);
-        for (let i = 0; i < attempts; i++) {
-            try {
-                const url = `/api/email/getmessage?id=${encodeURIComponent(id)}${preview ? '&preview=1' : ''}`;
-                const res = await fetch(url);
-                if (!res.ok) {
-                    // non-200 — treat like not ready and retry
-                    console.warn('[pollForMessage] non-200', res.status);
-                } else {
-                    const text = await res.text();
-                    // try parse JSON first
-                    let parsed: any = null;
-                    try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
-
-                    // If preview mode and we have raw HTML (or parsed.message), return the HTML text directly
-                    if (preview) {
-                        if (parsed == null && text.trim().length > 0) {
-                            setLastRawResponse(text);
-                            setMessageStatus('received');
-                            try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
-                            await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
-                            return text;
-                        }
-                        if (parsed && typeof parsed === 'object') {
-                            if (parsed.status === 'success' || parsed.value === 'html_response' || parsed.message) {
-                                const body = typeof parsed.message === 'string' ? parsed.message : text;
-                                setLastRawResponse(body);
-                                setMessageStatus('received');
-                                try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
-                                await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
-                                return body;
-                            }
-                            if (parsed.status === 'error') {
-                                const val = String(parsed.value ?? parsed.error ?? '').toLowerCase();
-                                if (val.includes('wait') || val.includes('not ready')) {
-                                    // continue polling
-                                } else {
-                                    showToast(`Reorder fetch failed: ${String(parsed.value ?? parsed.error ?? JSON.stringify(parsed))}`, 'error');
-                                    setError(JSON.stringify(parsed));
-                                    setUserError(true);
-                                    return false;
-                                }
-                            }
-                        }
-                    } else {
-                        // non-preview mode: detect success object or raw string
-                        if (parsed == null && text.trim().length > 0) {
-                            setLastRawResponse(text);
-                            setMessageStatus('received');
-                            try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
-                            await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
-                            return true;
-                        }
-                        if (parsed && typeof parsed === 'object') {
-                            if (parsed.status === 'success' || parsed.value === 'html_response' || parsed.message) {
-                                setMessageStatus('received');
-                                if (typeof parsed.message === 'string') setLastRawResponse(parsed.message);
-                                try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
-                                await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
-                                return true;
-                            }
-                            if (parsed.status === 'error') {
-                                const val = String(parsed.value ?? parsed.error ?? '').toLowerCase();
-                                if (val.includes('wait') || val.includes('not ready')) {
-                                    // continue polling
-                                } else {
-                                    showToast(`Reorder fetch failed: ${String(parsed.value ?? parsed.error ?? JSON.stringify(parsed))}`, 'error');
-                                    setError(JSON.stringify(parsed));
-                                    setUserError(true);
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: any) {
-                console.warn('[pollForMessage] attempt failed for', id, e);
-            }
-
-            // delay before next attempt
-            await new Promise((r) => setTimeout(r, intervalMs));
-        }
-        return false;
-    };
-
-    // New: reorder handler - calls API (by id or by email+site), refreshes orders and attempts to fetch the new message
-    const handleReorder = async (order: { id: string; email?: string; site?: string }) => {
-        setLoading(true);
-        setError(null);
-        setUserError(false);
+    const openPreviewHtml = async (id: string) => {
         try {
-            let res: any;
-            if (order.id) {
-                res = await api.reorderEmailById(order.id);
-            } else if (order.email && order.site) {
-                res = await api.reorderEmailByEmail(order.email, order.site);
-            } else {
-                setError('Cannot reorder: missing id or email/site');
-                setUserError(true);
-                return;
-            }
-
-            if (res == null) {
-                showToast('Empty response from reorder', 'warning');
-                setError('Empty response from reorder');
-                setUserError(true);
-            } else if (typeof res === 'string') {
-                setLastRawResponse(res);
-                showToast('Reorder returned raw HTML — open or download to inspect', 'warning');
-            } else if (res?.status === 'success') {
-                // Save the full response so user can inspect it (object -> pretty JSON) and keep parsed object
-                try {
-                    setLastRawResponse(typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res));
-                } catch (e) {
-                    setLastRawResponse(String(res));
-                }
-                setLastReorder(res ?? null);
-                showToast(`Reorder successful${res.id ? ' — id: ' + res.id + (res.email ? ', email: ' + res.email : '') : ''}`, 'success');
-                // refresh orders list (rate-limited helper)
-                await fetchStoredOrdersRateLimited();
-                // If server returned a new id, attempt to fetch the message using the existing handler
-                // which will use getMessageRateLimited and fall back to polling if needed.
-                if (res.id) {
-                    // Kick off the normal get-message flow which already handles 'wait message' by polling
-                    await handleGetMessage(String(res.id));
-                }
-             } else if (res?.status === 'error') {
-                const val = String(res.value ?? res.error ?? JSON.stringify(res));
-                showToast(`Reorder failed: ${val}`, 'error');
-                setError(JSON.stringify(res));
-                setUserError(true);
-                setLastReorder(res ?? null);
-             } else {
-                showToast('Unexpected reorder response', 'warning');
-                setError(JSON.stringify(res));
-                setUserError(true);
-                setLastReorder(res ?? null);
-             }
+            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
+            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); return; }
+            const text = await res.text();
+            const blob = new Blob([text], { type: "text/html" });
+            const url = URL.createObjectURL(blob);
+            window.open(url, "_blank");
         } catch (e: any) {
             setError(String(e?.message ?? e));
             setUserError(true);
-        } finally {
-            setLoading(false);
+        }
+    };
+
+    const downloadPreviewHtml = async (id: string) => {
+        try {
+            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
+            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); return; }
+            const text = await res.text();
+            const blob = new Blob([text], { type: "text/html" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `message-${id}.html`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e: any) {
+            setError(String(e?.message ?? e));
+            setUserError(true);
         }
     };
 
@@ -558,111 +437,6 @@ export const EmailGenerator = () => {
             setLoading(false);
         }
     };
-
-    // Helpers: open or download preview HTML (preview=1)
-    async function openPreviewHtml(id?: string | null) {
-        if (!id) return;
-        try {
-            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); setUserError(true); return; }
-            const text = await res.text();
-            // try parse JSON to detect 'wait' responses
-            let parsed: any = null;
-            try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
-
-            if (parsed && parsed.status === 'error' && String(parsed.value).toLowerCase().includes('wait')) {
-                // message not ready — try short polling (preview mode) and open the HTML if found
-                const found = await pollForMessage(id, 6, 3000, true);
-                if (typeof found === 'string') {
-                    const blob = new Blob([found], { type: "text/html" });
-                    const url = URL.createObjectURL(blob);
-                    window.open(url, "_blank");
-                    return;
-                }
-                // If pollForMessage returned true (non-preview) or false, fallback to re-fetching preview
-                if (found === true) {
-                    const r2 = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-                    if (r2.ok) {
-                        const html = await r2.text();
-                        const blob = new Blob([html], { type: "text/html" });
-                        const url = URL.createObjectURL(blob);
-                        window.open(url, "_blank");
-                        return;
-                    }
-                }
-             }
-
-            // otherwise treat response as HTML (or JSON containing html/message)
-            const htmlText = (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') ? parsed.message : text;
-            const blob = new Blob([htmlText], { type: "text/html" });
-            const url = URL.createObjectURL(blob);
-            window.open(url, "_blank");
-        } catch (e: any) {
-            setError(String(e?.message ?? e));
-            setUserError(true);
-        }
-    }
-
-    async function downloadPreviewHtml(id?: string | null) {
-        if (!id) return;
-        try {
-            const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-            if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); setUserError(true); return; }
-            const text = await res.text();
-            let parsed: any = null;
-            try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
-
-            if (parsed && parsed.status === 'error' && String(parsed.value).toLowerCase().includes('wait')) {
-                const found = await pollForMessage(id, 6, 3000, true);
-                if (typeof found === 'string') {
-                    const blob = new Blob([found], { type: "text/html" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = `message-${id}.html`;
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
-                    return;
-                }
-                if (found === true) {
-                    const r2 = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
-                    if (r2.ok) {
-                        const html = await r2.text();
-                        const blob = new Blob([html], { type: "text/html" });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = `message-${id}.html`;
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
-                        return;
-                    }
-                }
-
-                 setMessageStatus('waiting');
-                 showToast('Message not received yet — try again later', 'info');
-                 return;
-             }
-
-            const htmlText = (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') ? parsed.message : text;
-            const blob = new Blob([htmlText], { type: "text/html" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `message-${id}.html`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-        } catch (e: any) {
-            setError(String(e?.message ?? e));
-            setUserError(true);
-        }
-    }
 
     const downloadLastResponse = () => {
         if (!lastRawResponse) return;
@@ -777,15 +551,6 @@ export const EmailGenerator = () => {
                                     </button>
 
                                     <button
-                                        title="Reorder this activation/order"
-                                        onClick={() => handleReorder(o)}
-                                        className="rounded border px-2 py-1 text-xs"
-                                        disabled={loading}
-                                    >
-                                        Reorder
-                                    </button>
-
-                                    <button
                                         title="Cancel this activation/order"
                                         onClick={() => handleCancel(o.id)}
                                         className="rounded border px-2 py-1 text-xs text-danger"
@@ -841,20 +606,6 @@ export const EmailGenerator = () => {
                         <div className="mt-4 text-sm text-danger">{error ?? "Failed to fetch message"}</div>
                     ) : (
                         <div className="mt-4 text-sm text-tertiary">No message selected</div>
-                    )}
-
-                    {lastReorder && (
-                        <div className="mt-4 rounded border bg-surface-50 p-2 text-sm">
-                            <div className="font-medium">Last Reorder</div>
-                            <div className="mt-1">
-                                <ButtonUtility onClick={() => handleGetMessage(String(lastReorder.id))} size="sm" color="secondary">
-                                    Fetch Message by Reorder ID
-                                </ButtonUtility>
-                            </div>
-                            <div className="mt-2 text-xs text-tertiary">
-                                ID: {lastReorder.id} · Email: {lastReorder.email} · Site: {lastReorder.site}
-                            </div>
-                        </div>
                     )}
                 </div>
             </div>
