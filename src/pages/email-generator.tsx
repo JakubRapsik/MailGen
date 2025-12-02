@@ -355,7 +355,12 @@ export const EmailGenerator = () => {
                 await fetchStoredOrdersRateLimited();
             } else if (res?.status === "error") {
                 if (String(res.value).toLowerCase().includes("wait")) {
-                    setMessageStatus("waiting");
+                    // try short immediate polling before falling back to background waiting
+                    const found = await pollForMessage(id);
+                    if (!found) {
+                        setMessageStatus("waiting");
+                        showToast('Message not received yet — continuing to poll in background', 'info');
+                    }
                 } else {
                     setMessageStatus("error");
                     setError(JSON.stringify(res));
@@ -383,13 +388,13 @@ export const EmailGenerator = () => {
         }
     };
 
-    // New helper: poll for message a few times immediately after reorder. Returns true if message found and handled.
-    const pollForMessage = async (id: string, attempts = 6, intervalMs = 3000): Promise<boolean> => {
+    // Poll for a message. If preview=true, returns the HTML string when found; otherwise returns true/false.
+    const pollForMessage = async (id: string, attempts = 6, intervalMs = 3000, preview = false): Promise<string | boolean> => {
         // mark the message as selected so UI reflects which id we're waiting for
         setSelectedMessageId(id);
         for (let i = 0; i < attempts; i++) {
             try {
-                const url = `/api/email/getmessage?id=${encodeURIComponent(id)}`;
+                const url = `/api/email/getmessage?id=${encodeURIComponent(id)}${preview ? '&preview=1' : ''}`;
                 const res = await fetch(url);
                 if (!res.ok) {
                     // non-200 — treat like not ready and retry
@@ -400,39 +405,63 @@ export const EmailGenerator = () => {
                     let parsed: any = null;
                     try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
 
-                    // raw HTML / string response
-                    if (parsed == null && text.trim().length > 0) {
-                        setLastRawResponse(text);
-                        setMessageStatus('received');
-                        try {
-                            await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' });
-                        } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
-                        await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
-                        return true;
-                    }
-
-                    // parsed JSON
-                    if (parsed && typeof parsed === 'object') {
-                        if (parsed.status === 'success' || parsed.value === 'html_response' || parsed.message) {
+                    // If preview mode and we have raw HTML (or parsed.message), return the HTML text directly
+                    if (preview) {
+                        if (parsed == null && text.trim().length > 0) {
+                            setLastRawResponse(text);
                             setMessageStatus('received');
-                            // If response contains the message body inside parsed.message or parsed.data, store raw if present
-                            if (typeof parsed.message === 'string') setLastRawResponse(parsed.message);
-                            try {
-                                await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' });
-                            } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
+                            try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
+                            await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
+                            return text;
+                        }
+                        if (parsed && typeof parsed === 'object') {
+                            if (parsed.status === 'success' || parsed.value === 'html_response' || parsed.message) {
+                                const body = typeof parsed.message === 'string' ? parsed.message : text;
+                                setLastRawResponse(body);
+                                setMessageStatus('received');
+                                try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
+                                await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
+                                return body;
+                            }
+                            if (parsed.status === 'error') {
+                                const val = String(parsed.value ?? parsed.error ?? '').toLowerCase();
+                                if (val.includes('wait') || val.includes('not ready')) {
+                                    // continue polling
+                                } else {
+                                    showToast(`Reorder fetch failed: ${String(parsed.value ?? parsed.error ?? JSON.stringify(parsed))}`, 'error');
+                                    setError(JSON.stringify(parsed));
+                                    setUserError(true);
+                                    return false;
+                                }
+                            }
+                        }
+                    } else {
+                        // non-preview mode: detect success object or raw string
+                        if (parsed == null && text.trim().length > 0) {
+                            setLastRawResponse(text);
+                            setMessageStatus('received');
+                            try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
                             await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
                             return true;
                         }
-
-                        if (parsed.status === 'error') {
-                            const val = String(parsed.value ?? parsed.error ?? '').toLowerCase();
-                            if (val.includes('wait') || val.includes('not ready')) {
-                                // message not ready yet — continue polling
-                            } else {
-                                showToast(`Reorder fetch failed: ${String(parsed.value ?? parsed.error ?? JSON.stringify(parsed))}`, 'error');
-                                setError(JSON.stringify(parsed));
-                                setUserError(true);
-                                return false;
+                        if (parsed && typeof parsed === 'object') {
+                            if (parsed.status === 'success' || parsed.value === 'html_response' || parsed.message) {
+                                setMessageStatus('received');
+                                if (typeof parsed.message === 'string') setLastRawResponse(parsed.message);
+                                try { await fetch(`/api/orders/mark-success?id=${encodeURIComponent(id)}`, { method: 'POST' }); } catch (e) { console.warn('[pollForMessage] mark-success failed', e); }
+                                await fetchStoredOrdersRateLimited().catch((e) => console.warn('refresh orders failed:', e));
+                                return true;
+                            }
+                            if (parsed.status === 'error') {
+                                const val = String(parsed.value ?? parsed.error ?? '').toLowerCase();
+                                if (val.includes('wait') || val.includes('not ready')) {
+                                    // continue polling
+                                } else {
+                                    showToast(`Reorder fetch failed: ${String(parsed.value ?? parsed.error ?? JSON.stringify(parsed))}`, 'error');
+                                    setError(JSON.stringify(parsed));
+                                    setUserError(true);
+                                    return false;
+                                }
                             }
                         }
                     }
@@ -531,7 +560,35 @@ export const EmailGenerator = () => {
             const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
             if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); setUserError(true); return; }
             const text = await res.text();
-            const blob = new Blob([text], { type: "text/html" });
+            // try parse JSON to detect 'wait' responses
+            let parsed: any = null;
+            try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+
+            if (parsed && parsed.status === 'error' && String(parsed.value).toLowerCase().includes('wait')) {
+                // message not ready — try short polling (preview mode) and open the HTML if found
+                const found = await pollForMessage(id, 6, 3000, true);
+                if (typeof found === 'string') {
+                    const blob = new Blob([found], { type: "text/html" });
+                    const url = URL.createObjectURL(blob);
+                    window.open(url, "_blank");
+                    return;
+                }
+                // If pollForMessage returned true (non-preview) or false, fallback to re-fetching preview
+                if (found === true) {
+                    const r2 = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
+                    if (r2.ok) {
+                        const html = await r2.text();
+                        const blob = new Blob([html], { type: "text/html" });
+                        const url = URL.createObjectURL(blob);
+                        window.open(url, "_blank");
+                        return;
+                    }
+                }
+             }
+
+            // otherwise treat response as HTML (or JSON containing html/message)
+            const htmlText = (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') ? parsed.message : text;
+            const blob = new Blob([htmlText], { type: "text/html" });
             const url = URL.createObjectURL(blob);
             window.open(url, "_blank");
         } catch (e: any) {
@@ -546,7 +603,47 @@ export const EmailGenerator = () => {
             const res = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
             if (!res.ok) { setError(`Preview fetch failed: ${res.status}`); setUserError(true); return; }
             const text = await res.text();
-            const blob = new Blob([text], { type: "text/html" });
+            let parsed: any = null;
+            try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+
+            if (parsed && parsed.status === 'error' && String(parsed.value).toLowerCase().includes('wait')) {
+                const found = await pollForMessage(id, 6, 3000, true);
+                if (typeof found === 'string') {
+                    const blob = new Blob([found], { type: "text/html" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `message-${id}.html`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                    return;
+                }
+                if (found === true) {
+                    const r2 = await fetch(`/api/email/getmessage?id=${encodeURIComponent(id)}&preview=1`);
+                    if (r2.ok) {
+                        const html = await r2.text();
+                        const blob = new Blob([html], { type: "text/html" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `message-${id}.html`;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                        return;
+                    }
+                }
+
+                 setMessageStatus('waiting');
+                 showToast('Message not received yet — try again later', 'info');
+                 return;
+             }
+
+            const htmlText = (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') ? parsed.message : text;
+            const blob = new Blob([htmlText], { type: "text/html" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
