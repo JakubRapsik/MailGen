@@ -183,6 +183,62 @@ export const EmailGenerator = () => {
 
     const removeToast = (id: string) => setToasts((s) => s.filter((t) => t.id !== id));
 
+    // track per-order reorder loading state so UI can disable the Reorder button
+    const [reorderLoadingIds, setReorderLoadingIds] = useState<Record<string, boolean>>({});
+
+    const setReorderLoading = (id: string, v: boolean) => {
+        setReorderLoadingIds((prev) => {
+            if (v) return { ...prev, [id]: true };
+            const next = { ...prev };
+            delete next[id];
+            return next;
+        });
+    };
+
+    const handleReorder = async (id?: string, email?: string, site?: string) => {
+        if (!id && (!email || !site)) {
+            showToast('Missing id or email/site for reorder', 'error');
+            return;
+        }
+        const key = id ?? `${email}@${site}`;
+        setReorderLoading(key, true);
+        setLoading(true);
+        setError(null);
+        try {
+            let res: any;
+            if (id) {
+                res = await api.reorderEmailById(id);
+            } else {
+                res = await api.reorderEmailByEmail(email!, site!);
+            }
+
+            if (res?.status === 'success') {
+                // optimistically mark order pending so the message scanner will pick it up
+                setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: 'pending' } : o)));
+                // clear selected message if it was for this id
+                if (selectedMessageId === id) setSelectedMessageId(null);
+                showToast('Reorder requested — waiting for new message', 'success');
+                // refresh orders (rate-limited helper)
+                await fetchStoredOrdersRateLimited();
+            } else if (typeof res === 'string') {
+                setLastRawResponse(res);
+                showToast('Server returned raw HTML for reorder — inspect the response', 'warning');
+            } else {
+                // backend returned some error-like object
+                setError(JSON.stringify(res));
+                setUserError(true);
+                showToast('Reorder failed', 'error');
+            }
+        } catch (e: any) {
+            setError(String(e?.message ?? e));
+            setUserError(true);
+            showToast('Reorder failed', 'error');
+        } finally {
+            setReorderLoading(key, false);
+            setLoading(false);
+        }
+    };
+
     const fetchStoredOrders = async () => {
         try {
             const url = `/api/stored-orders?_ts=${Date.now()}`;
@@ -556,6 +612,15 @@ export const EmailGenerator = () => {
                                         className="rounded border px-2 py-1 text-xs text-danger"
                                     >
                                         Cancel
+                                    </button>
+
+                                    <button
+                                        title="Reorder this email (will set to pending and wait for a new message)"
+                                        onClick={() => handleReorder(o.id, o.email, o.site)}
+                                        disabled={Boolean(reorderLoadingIds[o.id])}
+                                        className="rounded border px-2 py-1 text-xs"
+                                    >
+                                        {reorderLoadingIds[o.id] ? 'Reordering...' : 'Reorder'}
                                     </button>
                                 </div>
                             </li>
