@@ -213,12 +213,11 @@ export const EmailGenerator = () => {
             }
 
             if (res?.status === 'success') {
-                // optimistically mark order pending so the message scanner will pick it up
-                setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: 'pending' } : o)));
                 // clear selected message if it was for this id
                 if (selectedMessageId === id) setSelectedMessageId(null);
                 showToast('Reorder requested — waiting for new message', 'success');
-                // refresh orders (rate-limited helper)
+                // wait for the server endpoint (api/email/reorder) to persist the status change
+                // then refresh stored orders so UI reflects the DB (avoids optimistic mismatches)
                 await fetchStoredOrdersRateLimited();
             } else if (typeof res === 'string') {
                 setLastRawResponse(res);
