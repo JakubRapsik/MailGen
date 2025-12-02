@@ -417,6 +417,57 @@ export const EmailGenerator = () => {
         }
     };
 
+    // New: reorder handler - calls API (by id or by email+site), refreshes orders and attempts to fetch the new message
+    const handleReorder = async (order: { id: string; email?: string; site?: string }) => {
+        setLoading(true);
+        setError(null);
+        setUserError(false);
+        try {
+            let res: any;
+            if (order.id) {
+                res = await api.reorderEmailById(order.id);
+            } else if (order.email && order.site) {
+                res = await api.reorderEmailByEmail(order.email, order.site);
+            } else {
+                setError('Cannot reorder: missing id or email/site');
+                setUserError(true);
+                return;
+            }
+
+            if (res == null) {
+                showToast('Empty response from reorder', 'warning');
+                setError('Empty response from reorder');
+                setUserError(true);
+            } else if (typeof res === 'string') {
+                setLastRawResponse(res);
+                showToast('Reorder returned raw HTML — open or download to inspect', 'warning');
+            } else if (res?.status === 'success') {
+                showToast(`Reorder successful${res.id ? ' — id: ' + res.id : ''}`, 'success');
+                // refresh orders list (rate-limited helper)
+                await fetchStoredOrdersRateLimited();
+                // if server returned a new id for the activation, fetch its message
+                if (res.id) {
+                    // call existing handler to fetch and display the message
+                    await handleGetMessage(String(res.id));
+                }
+            } else if (res?.status === 'error') {
+                const val = String(res.value ?? res.error ?? JSON.stringify(res));
+                showToast(`Reorder failed: ${val}`, 'error');
+                setError(JSON.stringify(res));
+                setUserError(true);
+            } else {
+                showToast('Unexpected reorder response', 'warning');
+                setError(JSON.stringify(res));
+                setUserError(true);
+            }
+        } catch (e: any) {
+            setError(String(e?.message ?? e));
+            setUserError(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleCancel = async (id: string) => {
         setLoading(true);
         setError(null);
@@ -548,6 +599,15 @@ export const EmailGenerator = () => {
                                         className="rounded border px-2 py-1 text-xs"
                                     >
                                         Download HTML
+                                    </button>
+
+                                    <button
+                                        title="Reorder this activation/order"
+                                        onClick={() => handleReorder(o)}
+                                        className="rounded border px-2 py-1 text-xs"
+                                        disabled={loading}
+                                    >
+                                        Reorder
                                     </button>
 
                                     <button
