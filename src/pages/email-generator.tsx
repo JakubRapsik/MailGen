@@ -18,6 +18,7 @@ export const EmailGenerator = () => {
     const [userError, setUserError] = useState<boolean>(false);
     const [statusMsg, setStatusMsg] = useState<string | null>(null);
     const [lastRawResponse, setLastRawResponse] = useState<string | null>(null);
+    const [lastReorder, setLastReorder] = useState<any | null>(null);
 
     const scanningRef = useRef(false);
 
@@ -501,29 +502,34 @@ export const EmailGenerator = () => {
                 setLastRawResponse(res);
                 showToast('Reorder returned raw HTML — open or download to inspect', 'warning');
             } else if (res?.status === 'success') {
-                showToast(`Reorder successful${res.id ? ' — id: ' + res.id : ''}`, 'success');
+                // Save the full response so user can inspect it (object -> pretty JSON) and keep parsed object
+                try {
+                    setLastRawResponse(typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res));
+                } catch (e) {
+                    setLastRawResponse(String(res));
+                }
+                setLastReorder(res ?? null);
+                showToast(`Reorder successful${res.id ? ' — id: ' + res.id + (res.email ? ', email: ' + res.email : '') : ''}`, 'success');
                 // refresh orders list (rate-limited helper)
                 await fetchStoredOrdersRateLimited();
-                // if server returned a new id for the activation, try to poll for its message immediately
+                // If server returned a new id, attempt to fetch the message using the existing handler
+                // which will use getMessageRateLimited and fall back to polling if needed.
                 if (res.id) {
-                    const found = await pollForMessage(String(res.id));
-                    if (!found) {
-                        // not found during quick polling — set waiting state so the background poller continues
-                        setSelectedMessageId(String(res.id));
-                        setMessageStatus('waiting');
-                        showToast('Message not received yet — continuing to poll in background', 'info');
-                    }
+                    // Kick off the normal get-message flow which already handles 'wait message' by polling
+                    await handleGetMessage(String(res.id));
                 }
-            } else if (res?.status === 'error') {
+             } else if (res?.status === 'error') {
                 const val = String(res.value ?? res.error ?? JSON.stringify(res));
                 showToast(`Reorder failed: ${val}`, 'error');
                 setError(JSON.stringify(res));
                 setUserError(true);
-            } else {
+                setLastReorder(res ?? null);
+             } else {
                 showToast('Unexpected reorder response', 'warning');
                 setError(JSON.stringify(res));
                 setUserError(true);
-            }
+                setLastReorder(res ?? null);
+             }
         } catch (e: any) {
             setError(String(e?.message ?? e));
             setUserError(true);
@@ -835,6 +841,20 @@ export const EmailGenerator = () => {
                         <div className="mt-4 text-sm text-danger">{error ?? "Failed to fetch message"}</div>
                     ) : (
                         <div className="mt-4 text-sm text-tertiary">No message selected</div>
+                    )}
+
+                    {lastReorder && (
+                        <div className="mt-4 rounded border bg-surface-50 p-2 text-sm">
+                            <div className="font-medium">Last Reorder</div>
+                            <div className="mt-1">
+                                <ButtonUtility onClick={() => handleGetMessage(String(lastReorder.id))} size="sm" color="secondary">
+                                    Fetch Message by Reorder ID
+                                </ButtonUtility>
+                            </div>
+                            <div className="mt-2 text-xs text-tertiary">
+                                ID: {lastReorder.id} · Email: {lastReorder.email} · Site: {lastReorder.site}
+                            </div>
+                        </div>
                     )}
                 </div>
             </div>
